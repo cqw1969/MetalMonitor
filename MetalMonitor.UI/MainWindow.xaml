@@ -1,36 +1,24 @@
 ﻿<Window x:Class="MetalMonitor.UI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:local="clr-namespace:MetalMonitor.UI"
-        Title="金属加工设备实时监控" Height="250" Width="400"
+        xmlns:views="clr-namespace:MetalMonitor.UI.Views"
+        Title="金属加工设备实时监控" Height="450" Width="650"
         Background="#FF1E1E2E">
-    <Grid>
-        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-            <!-- 设备名称 -->
-            <TextBlock Text="{Binding CurrentDevice.Name}" 
-                       FontSize="24" Foreground="White" 
-                       HorizontalAlignment="Center" Margin="0,0,0,10"/>
-
-            <!-- 温度显示，带单位 -->
-            <TextBlock FontSize="48" Foreground="LightGreen" 
-                       HorizontalAlignment="Center">
-                <Run Text="{Binding CurrentDevice.Temperature, StringFormat='\{0:F1\}'}"/>
-                <Run Text=" ℃" FontSize="24"/>
-            </TextBlock>
-
-            <!-- 状态指示灯 -->
-            <Ellipse Width="30" Height="30" HorizontalAlignment="Center" Margin="0,10,0,0">
-                <Ellipse.Style>
-                    <Style TargetType="Ellipse">
-                        <Setter Property="Fill" Value="LightGreen"/>
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding CurrentDevice.IsAlarming}" Value="True">
-                                <Setter Property="Fill" Value="Red"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </Ellipse.Style>
-            </Ellipse>
-        </StackPanel>
+    <Grid Margin="10">
+        <!-- ItemsControl：循环绑定 Devices 集合 -->
+        <ItemsControl ItemsSource="{Binding DeviceCardViewModels}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <!-- 卡片横向排列，宽度不够自动换行 -->
+                    <WrapPanel/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <!-- 使用我们封装好的 DeviceCardView 用户控件 -->
+                    <views:DeviceCardView Margin="0,0,10,10"/>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
     </Grid>
 </Window>

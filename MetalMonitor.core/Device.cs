@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
 namespace MetalMonitor.Core
@@ -18,14 +18,7 @@ namespace MetalMonitor.Core
         public double Temperature
         {
             get => _temperature;
-            set
-            {
-                if (SetProperty(ref _temperature, value))
-                {
-                    // 温度变化时，自动判断是否报警
-                    IsAlarming = value >= 85;
-                }
-            }
+            set => SetProperty(ref _temperature, value);
         }
 
         public bool IsAlarming
@@ -34,12 +27,18 @@ namespace MetalMonitor.Core
             private set => SetProperty(ref _isAlarming, value);
         }
 
+        // 设置报警状态（由服务层调用）
+        public void SetAlarmState(bool isAlarming)
+        {
+            IsAlarming = isAlarming;
+        }
+
         // 构造一个方便测试的设备
         public Device(string name, double initialTemp = 60)
         {
             Name = name;
-            _temperature = initialTemp;
-            IsAlarming = initialTemp >= 85;
+            _temperature = initialTemp;//这里直接赋值给字段而不是属性，以避免触发 PropertyChanged 事件
+            IsAlarming = false;
         }
 
         // 实现 INotifyPropertyChanged
