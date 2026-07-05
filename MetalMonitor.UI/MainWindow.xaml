@@ -50,8 +50,8 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
                 <Grid Grid.Row="0" Margin="0,0,0,8">
-                    <Border Width="3" Height="20" Background="#FFFFB86B" CornerRadius="1.5" Margin="0,0,8,0"/>
-                    <TextBlock Text="系统日志" FontSize="14" FontWeight="SemiBold" Foreground="#FFE0E0E0"/>
+                    <Border Width="3" Height="20" Background="#FFFFB86B" CornerRadius="1.5" Margin="0,0,8,0" HorizontalAlignment="Left"/>
+                    <TextBlock Text=" 系统日志" FontSize="14" FontWeight="SemiBold" Foreground="#FFE0E0E0"/>
                 </Grid>
                 <ListView Grid.Row="1" 
                           ItemsSource="{Binding AlarmLogs}" 

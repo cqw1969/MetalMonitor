@@ -13,25 +13,22 @@ namespace MetalMonitor.UI.ViewModels
     {
         public Device Device { get; }
 
-        // 温度历史记录，用于曲线
         public ObservableCollection<ObservablePoint> TemperaturePoints { get; } = new();
+        public ObservableCollection<ObservablePoint> AlarmPoints { get; } = new();
 
-        // 曲线系列定义
         public ISeries[] Series { get; set; }
 
-        // X 轴配置
         public Axis[] XAxes { get; set; }
 
-        // Y 轴配置
         public Axis[] YAxes { get; set; }
 
-        private const int MaxHistoryPoints = 60; // 保留最近60个点
+        private const int MaxHistoryPoints = 60;
+        private const double AlarmThreshold = 85.0;
 
         public DeviceCardViewModel(Device device)
         {
             Device = device;
 
-            // 订阅属性变化
             Device.PropertyChanged += OnDevicePropertyChanged;
 
             Series = new ISeries[]
@@ -43,6 +40,13 @@ namespace MetalMonitor.UI.ViewModels
                     Stroke = new SolidColorPaint(SKColors.LightGreen) { StrokeThickness = 2 },
                     GeometrySize = 0,
                     LineSmoothness = 0.4
+                },
+                new ScatterSeries<ObservablePoint>
+                {
+                    Values = AlarmPoints,
+                    GeometrySize = 5,
+                    Fill = new SolidColorPaint(SKColors.Red),
+                    Stroke = new SolidColorPaint(SKColors.Red) { StrokeThickness = 1 }
                 }
             };
 
@@ -67,19 +71,29 @@ namespace MetalMonitor.UI.ViewModels
             };
         }
 
-        // 添加新温度点到历史记录
         public void AddTemperaturePoint(double temperature)
         {
             TemperaturePoints.Add(new ObservablePoint(TemperaturePoints.Count, temperature));
 
-            // 保持点数不超标
+            if (temperature >= AlarmThreshold)
+            {
+                AlarmPoints.Add(new ObservablePoint(TemperaturePoints.Count - 1, temperature));
+            }
+
             while (TemperaturePoints.Count > MaxHistoryPoints)
             {
                 TemperaturePoints.RemoveAt(0);
-                // 重新索引 X 坐标，保持连续
+                if (AlarmPoints.Count > 0)
+                {
+                    AlarmPoints.RemoveAt(0);
+                }
                 for (int i = 0; i < TemperaturePoints.Count; i++)
                 {
                     TemperaturePoints[i].X = i;
+                }
+                for (int i = 0; i < AlarmPoints.Count; i++)
+                {
+                    AlarmPoints[i].X = i;
                 }
             }
         }
