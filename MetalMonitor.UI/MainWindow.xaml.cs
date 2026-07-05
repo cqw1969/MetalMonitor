@@ -7,17 +7,15 @@ namespace MetalMonitor.UI
     {
         private MainViewModel? _viewModel;
 
-        public MainWindow()
+        public MainWindow(MainViewModel viewModel)
         {
             InitializeComponent();
-            // 把 ViewModel 挂到窗口的数据上下文上
-            _viewModel = new MainViewModel();
-            DataContext = _viewModel;
+            _viewModel = viewModel;
+            DataContext = viewModel;
         }
 
         protected override void OnClosed(EventArgs e)
         {
-            // 窗口关闭时释放 ViewModel 资源
             _viewModel?.Dispose();
             base.OnClosed(e);
         }

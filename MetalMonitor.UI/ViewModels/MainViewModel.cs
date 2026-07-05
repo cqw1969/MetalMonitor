@@ -19,15 +19,12 @@ namespace MetalMonitor.UI.ViewModels
         // 报警记录
         public ObservableCollection<string> AlarmLogs { get; set; } = new();
 
-        public MainViewModel()
+        public MainViewModel(IDataService dataService, IAlarmService alarmService)//这里应用了DI容器
         {
-            //创建报警服务实例
-            _alarmService = new AlarmService();
+            _dataService = dataService;
+            _alarmService = alarmService;
 
             _alarmService.AlarmStateChanged += OnAlarmStateChanged;
-
-            // 使用模拟数据服务（暑假换成 HardwareDataService）
-            _dataService = new SimulatedDataService(_alarmService);
 
             //Devices = new ObservableCollection<Device>();
             DeviceCardViewModels = new ObservableCollection<DeviceCardViewModel>();
