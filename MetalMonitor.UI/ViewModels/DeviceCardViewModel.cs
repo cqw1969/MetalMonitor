@@ -1,6 +1,7 @@
 ﻿using LiveChartsCore;
 using LiveChartsCore.Defaults;
 using LiveChartsCore.SkiaSharpView;
+using LiveChartsCore.SkiaSharpView.Painting;
 using MetalMonitor.Core;
 using SkiaSharp;
 using System.Collections.ObjectModel;
@@ -33,16 +34,15 @@ namespace MetalMonitor.UI.ViewModels
             // 订阅属性变化
             Device.PropertyChanged += OnDevicePropertyChanged;
 
-            // 初始化曲线
             Series = new ISeries[]
             {
                 new LineSeries<ObservablePoint>
                 {
                     Values = TemperaturePoints,
-                    Fill = null,
-                    Stroke = new LiveChartsCore.SkiaSharpView.Painting.SolidColorPaint(SKColors.LightGreen) { StrokeThickness = 2 },
-                    GeometrySize = 0, // 不显示数据点圆圈
-                    LineSmoothness = 0.3 // 轻微平滑
+                    Fill = new SolidColorPaint(new SKColor(108, 212, 108, 80)),
+                    Stroke = new SolidColorPaint(SKColors.LightGreen) { StrokeThickness = 2 },
+                    GeometrySize = 0,
+                    LineSmoothness = 0.4
                 }
             };
 
@@ -51,7 +51,7 @@ namespace MetalMonitor.UI.ViewModels
                 new Axis
                 {
                     ShowSeparatorLines = false,
-                    IsVisible = false // 隐藏X轴
+                    IsVisible = false
                 }
             };
 
@@ -62,7 +62,7 @@ namespace MetalMonitor.UI.ViewModels
                     MinLimit = 40,
                     MaxLimit = 100,
                     ShowSeparatorLines = false,
-                    IsVisible = false // 隐藏Y轴，迷你图不需要坐标轴
+                    IsVisible = false
                 }
             };
         }

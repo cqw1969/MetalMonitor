@@ -1,60 +1,143 @@
-﻿<UserControl x:Class="MetalMonitor.UI.Views.DeviceCardView"
+<UserControl x:Class="MetalMonitor.UI.Views.DeviceCardView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:lvc="clr-namespace:LiveChartsCore.SkiaSharpView.WPF;assembly=LiveChartsCore.SkiaSharpView.WPF"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
              mc:Ignorable="d" 
-             d:DesignHeight="220" d:DesignWidth="200">
+             d:DesignHeight="260" d:DesignWidth="220">
 
-    <!-- 根 Grid，命名为 RootGrid，后台代码会设置它的 DataContext -->
     <Grid x:Name="RootGrid">
-        <Border Background="#FF2D2D3F" CornerRadius="8" 
-                Width="200" Padding="10">
-            <StackPanel>
-                <!-- 设备名称，现在绑定到 ViewModel 的 Device.Name -->
-                <TextBlock Text="{Binding Device.Name}" 
-                           FontSize="16" Foreground="White" 
-                           HorizontalAlignment="Center"
-                           Margin="0,0,0,5"/>
+        <Border CornerRadius="12" Padding="15" Width="220" Height="260">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Background">
+                        <Setter.Value>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                <GradientStop Color="#FF2D2D3F" Offset="0"/>
+                                <GradientStop Color="#FF3D3D52" Offset="1"/>
+                            </LinearGradientBrush>
+                        </Setter.Value>
+                    </Setter>
+                    <Setter Property="Effect">
+                        <Setter.Value>
+                            <DropShadowEffect Color="#000000" Opacity="0.3" BlurRadius="10" ShadowDepth="5"/>
+                        </Setter.Value>
+                    </Setter>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Device.IsAlarming}" Value="True">
+                            <Setter Property="Background">
+                                <Setter.Value>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                        <GradientStop Color="#FF4A2C32" Offset="0"/>
+                                        <GradientStop Color="#FF3D252A" Offset="1"/>
+                                    </LinearGradientBrush>
+                                </Setter.Value>
+                            </Setter>
+                            <Setter Property="Effect">
+                                <Setter.Value>
+                                    <DropShadowEffect Color="#FF6B3E3E" Opacity="0.6" BlurRadius="15" ShadowDepth="5"/>
+                                </Setter.Value>
+                            </Setter>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
 
-                <!-- 温度数字和曲线放在一起 -->
-                <Grid Margin="0,5,0,0">
+            <StackPanel>
+                <Grid Margin="0,0,0,10">
+                    <TextBlock Text="{Binding Device.Name}" 
+                               FontSize="16" 
+                               FontWeight="SemiBold"
+                               Foreground="#FFE0E0E0" 
+                               HorizontalAlignment="Center"/>
+                    <Border HorizontalAlignment="Center" 
+                            VerticalAlignment="Bottom" 
+                            Height="1" 
+                            Width="60" 
+                            Background="#FF4A4A5C" 
+                            Margin="0,2,0,0"/>
+                </Grid>
+
+                <Grid Margin="0,5,0,10">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="60"/>
-                        <!-- 曲线高度 -->
+                        <RowDefinition Height="70"/>
                     </Grid.RowDefinitions>
 
-                    <!-- 温度数值 -->
-                    <TextBlock Grid.Row="0" FontSize="28" Foreground="LightGreen" 
-                               HorizontalAlignment="Center">
-                        <Run Text="{Binding Device.Temperature, StringFormat={}{0:F1}}"/>
-                        <Run Text="℃" FontSize="14"/>
-                    </TextBlock>
+                    <Grid Grid.Row="0" HorizontalAlignment="Center">
+                        <TextBlock FontSize="42" 
+                                   FontWeight="Bold"
+                                   HorizontalAlignment="Center">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="#FF6CD46C"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Device.IsAlarming}" Value="True">
+                                            <Setter Property="Foreground" Value="#FFFF6B6B"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                            <Run Text="{Binding Device.Temperature, StringFormat={}{0:F1}}"/>
+                        </TextBlock>
+                        <TextBlock Text="℃" 
+                                   FontSize="18" 
+                                   Foreground="#FF888899"
+                                   VerticalAlignment="Bottom" 
+                                   Margin="4,0,0,2"/>
+                    </Grid>
 
-                    <!-- 实时曲线迷你图 -->
                     <lvc:CartesianChart Grid.Row="1"
                                         Series="{Binding Series}"
                                         XAxes="{Binding XAxes}"
                                         YAxes="{Binding YAxes}"
-                                        Margin="0,2,0,0"/>
+                                        Margin="0,5,0,0"
+                                        Background="Transparent"/>
                 </Grid>
 
-                <!-- 报警指示灯 -->
-                <Ellipse Width="20" Height="20" 
-                         HorizontalAlignment="Center" Margin="0,5,0,0">
-                    <Ellipse.Style>
-                        <Style TargetType="Ellipse">
-                            <Setter Property="Fill" Value="LightGreen"/>
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Device.IsAlarming}" Value="True">
-                                    <Setter Property="Fill" Value="Red"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Ellipse.Style>
-                </Ellipse>
+                <Grid HorizontalAlignment="Center">
+                    <Ellipse Width="28" Height="28">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="#FF6CD46C"/>
+                                <Setter Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#FF6CD46C" Opacity="0.8" BlurRadius="15"/>
+                                    </Setter.Value>
+                                </Setter>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Device.IsAlarming}" Value="True">
+                                        <Setter Property="Fill" Value="#FFFF6B6B"/>
+                                        <Setter Property="Effect">
+                                            <Setter.Value>
+                                                <DropShadowEffect Color="#FFFF6B6B" Opacity="0.9" BlurRadius="20"/>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="运行中" 
+                               FontSize="10" 
+                               Foreground="#FF888899"
+                               VerticalAlignment="Center"
+                               HorizontalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="运行中"/>
+                                <Setter Property="Foreground" Value="#FF6CD46C"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Device.IsAlarming}" Value="True">
+                                        <Setter Property="Text" Value="报警"/>
+                                        <Setter Property="Foreground" Value="#FFFF6B6B"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
             </StackPanel>
         </Border>
     </Grid>
