@@ -9,19 +9,17 @@ namespace MetalMonitor.UI.ViewModels
 {
     public class MainViewModel : IDisposable
     {
-        //public ObservableCollection<Device> Devices { get; set; }
         public ObservableCollection<DeviceCardViewModel> DeviceCardViewModels { get; set; }
 
-        private readonly IDataService _dataService;
+        private readonly IDeviceService _deviceService;
         private readonly System.Timers.Timer _dataTimer;
         private readonly IAlarmService _alarmService;
 
-        // 报警记录
         public ObservableCollection<string> AlarmLogs { get; set; } = new();
 
-        public MainViewModel(IDataService dataService, IAlarmService alarmService)//这里应用了DI容器
+        public MainViewModel(IDeviceService deviceService, IAlarmService alarmService)
         {
-            _dataService = dataService;
+            _deviceService = deviceService;
             _alarmService = alarmService;
 
             _alarmService.AlarmStateChanged += OnAlarmStateChanged;
@@ -39,31 +37,22 @@ namespace MetalMonitor.UI.ViewModels
         {
             try
             {
-                //Debug.WriteLine($"当前是否UI线程：{Application.Current.Dispatcher.CheckAccess()}");
-                // 从数据服务获取最新设备数据
-                var devicesFromService = _dataService.GetAllDevices();
+                _deviceService.UpdateDevices();
 
-                // 将对 ObservableCollection 的修改调度到 UI 线程
                 Application.Current.Dispatcher.BeginInvoke(() =>
                 {
-                    //Debug.WriteLine($"当前是否UI线程：{Application.Current.Dispatcher.CheckAccess()}");
-                    // 首次加载时添加设备
                     if (DeviceCardViewModels.Count == 0)
                     {
-                        foreach (var device in devicesFromService)
+                        var devices = _deviceService.GetDevices();
+                        foreach (var device in devices)
                         {
-                            DeviceCardViewModels.Add(new DeviceCardViewModel(device));
+                            DeviceCardViewModels.Add(new DeviceCardViewModel(device, _deviceService));
                         }
                     }
-                    // 之后定时器触发时，Device 属性已被 SimulatedDataService 更新
-                    // DeviceCardViewModel 在构造时已订阅 Device.PropertyChanged，
-                    // 所以温度变化会自动触发 DeviceCardViewModel 内部的 AddTemperaturePoint，
-                    // UI 曲线会自动刷新，无需我们在这里做任何额外操作。
                 });
             }
             catch (Exception ex)
             {
-                // 记录异常信息到报警日志
                 Application.Current.Dispatcher.BeginInvoke(() =>
                 {
                     AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✗ 数据更新异常：{ex.Message}");

@@ -12,6 +12,7 @@ namespace MetalMonitor.UI.ViewModels
     public class DeviceCardViewModel : IDisposable
     {
         public Device Device { get; }
+        private readonly IDeviceService _deviceService;
 
         public ObservableCollection<ObservablePoint> TemperaturePoints { get; } = new();
         public ObservableCollection<ObservablePoint> AlarmPoints { get; } = new();
@@ -22,12 +23,10 @@ namespace MetalMonitor.UI.ViewModels
 
         public Axis[] YAxes { get; set; }
 
-        private const int MaxHistoryPoints = 60;
-        private const double AlarmThreshold = 85.0;
-
-        public DeviceCardViewModel(Device device)
+        public DeviceCardViewModel(Device device, IDeviceService deviceService)
         {
             Device = device;
+            _deviceService = deviceService;
 
             Device.PropertyChanged += OnDevicePropertyChanged;
 
@@ -75,12 +74,12 @@ namespace MetalMonitor.UI.ViewModels
         {
             TemperaturePoints.Add(new ObservablePoint(TemperaturePoints.Count, temperature));
 
-            if (temperature >= AlarmThreshold)
+            if (_deviceService.ShouldAlarm(temperature))
             {
                 AlarmPoints.Add(new ObservablePoint(TemperaturePoints.Count - 1, temperature));
             }
 
-            while (TemperaturePoints.Count > MaxHistoryPoints)
+            while (TemperaturePoints.Count > _deviceService.MaxHistoryPoints)
             {
                 TemperaturePoints.RemoveAt(0);
                 if (AlarmPoints.Count > 0)

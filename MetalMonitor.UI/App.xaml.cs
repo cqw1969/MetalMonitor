@@ -14,7 +14,7 @@ namespace MetalMonitor.UI
             var services = new ServiceCollection();
 
             services.AddSingleton<IAlarmService, AlarmService>();
-            services.AddSingleton<IDataService, SimulatedDataService>();
+            services.AddSingleton<IDeviceService, DeviceService>();
             services.AddSingleton<MainViewModel>();
 
             _serviceProvider = services.BuildServiceProvider();
