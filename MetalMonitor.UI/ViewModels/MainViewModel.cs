@@ -17,6 +17,8 @@ namespace MetalMonitor.UI.ViewModels
 
         public ObservableCollection<string> AlarmLogs { get; set; } = new();
 
+        public string DataSource => _deviceService.DataSource;
+
         public MainViewModel(IDeviceService deviceService, IAlarmService alarmService)
         {
             _deviceService = deviceService;

@@ -7,5 +7,6 @@ namespace MetalMonitor.Core
         bool ShouldAlarm(double temperature);
         int MaxHistoryPoints { get; }
         double AlarmThreshold { get; }
+        string DataSource { get; }
     }
 }

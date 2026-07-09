@@ -1,4 +1,4 @@
-﻿using LiveChartsCore;
+using LiveChartsCore;
 using LiveChartsCore.Defaults;
 using LiveChartsCore.SkiaSharpView;
 using LiveChartsCore.SkiaSharpView.Painting;
@@ -82,17 +82,17 @@ namespace MetalMonitor.UI.ViewModels
             while (TemperaturePoints.Count > _deviceService.MaxHistoryPoints)
             {
                 TemperaturePoints.RemoveAt(0);
-                if (AlarmPoints.Count > 0)
-                {
-                    AlarmPoints.RemoveAt(0);
-                }
                 for (int i = 0; i < TemperaturePoints.Count; i++)
                 {
                     TemperaturePoints[i].X = i;
                 }
-                for (int i = 0; i < AlarmPoints.Count; i++)
+                for (int i = AlarmPoints.Count - 1; i >= 0; i--)
                 {
-                    AlarmPoints[i].X = i;
+                    AlarmPoints[i].X -= 1;
+                    if (AlarmPoints[i].X < 0)
+                    {
+                        AlarmPoints.RemoveAt(i);
+                    }
                 }
             }
         }

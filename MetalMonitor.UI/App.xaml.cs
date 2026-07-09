@@ -9,15 +9,22 @@ namespace MetalMonitor.UI
     {
         private ServiceProvider? _serviceProvider;
 
-        protected override void OnStartup(StartupEventArgs e)
+        protected override async void OnStartup(StartupEventArgs e)
         {
             var services = new ServiceCollection();
 
             services.AddSingleton<IAlarmService, AlarmService>();
+            services.AddSingleton<IMqttService, MqttService>();
             services.AddSingleton<IDeviceService, DeviceService>();
             services.AddSingleton<MainViewModel>();
 
             _serviceProvider = services.BuildServiceProvider();
+
+            var deviceService = _serviceProvider.GetRequiredService<IDeviceService>() as DeviceService;
+            if (deviceService != null)
+            {
+                await deviceService.InitializeMqttAsync();
+            }
 
             var viewModel = _serviceProvider.GetRequiredService<MainViewModel>();
             var mainWindow = new MainWindow(viewModel);

@@ -1,11 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.37411.7 d17.14
+VisualStudioVersion = 17.14.37411.7
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MetalMonitor.core", "MetalMonitor.core\MetalMonitor.core.csproj", "{A38F4056-529A-4709-914D-1AEA7BDCE44A}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MetalMonitor.UI", "MetalMonitor.UI\MetalMonitor.UI.csproj", "{D68E90F3-2C7C-49C2-AE05-DA8E60D21676}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MetalMonitor.MqttPublisher", "MetalMonitor.MqttPublisher\MetalMonitor.MqttPublisher.csproj", "{E529A012-9BA2-82F5-270B-1A7D9D24A748}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,6 +23,10 @@ Global
 		{D68E90F3-2C7C-49C2-AE05-DA8E60D21676}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D68E90F3-2C7C-49C2-AE05-DA8E60D21676}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D68E90F3-2C7C-49C2-AE05-DA8E60D21676}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E529A012-9BA2-82F5-270B-1A7D9D24A748}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E529A012-9BA2-82F5-270B-1A7D9D24A748}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E529A012-9BA2-82F5-270B-1A7D9D24A748}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E529A012-9BA2-82F5-270B-1A7D9D24A748}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
