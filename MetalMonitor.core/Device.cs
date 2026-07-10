@@ -5,9 +5,16 @@ namespace MetalMonitor.Core
 {
     public class Device : INotifyPropertyChanged
     {
+        private string _id = string.Empty;
         private string _name = string.Empty;
         private double _temperature;
         private bool _isAlarming;
+
+        public string Id
+        {
+            get => _id;
+            set => SetProperty(ref _id, value);
+        }
 
         public string Name
         {
@@ -36,6 +43,7 @@ namespace MetalMonitor.Core
         // 构造一个方便测试的设备
         public Device(string name, double initialTemp = 60)
         {
+            Id = Guid.NewGuid().ToString();
             Name = name;
             _temperature = initialTemp;//这里直接赋值给字段而不是属性，以避免触发 PropertyChanged 事件
             IsAlarming = false;

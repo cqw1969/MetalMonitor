@@ -7,6 +7,7 @@ namespace MetalMonitor.Core
         private readonly List<Device> _devices;
         private readonly IAlarmService _alarmService;
         private readonly IMqttService? _mqttService;
+        private readonly IDatabaseService? _databaseService;
         private readonly Random _random = new();
         private bool _useMqtt = false;
 
@@ -31,6 +32,17 @@ namespace MetalMonitor.Core
         {
             _mqttService = mqttService;
             _mqttService.MessageReceived += OnMqttMessageReceived;
+            _mqttService.Disconnected += OnMqttDisconnected;
+        }
+
+        public DeviceService(IAlarmService alarmService, IDatabaseService databaseService) : this(alarmService)
+        {
+            _databaseService = databaseService;
+        }
+
+        public DeviceService(IAlarmService alarmService, IMqttService mqttService, IDatabaseService databaseService) : this(alarmService, mqttService)
+        {
+            _databaseService = databaseService;
         }
 
         public async Task InitializeMqttAsync()
@@ -79,7 +91,7 @@ namespace MetalMonitor.Core
             }
         }
 
-        private void UpdateDeviceData()
+        private async Task UpdateDeviceDataAsync()
         {
             foreach (var device in _devices)
             {
@@ -90,6 +102,11 @@ namespace MetalMonitor.Core
                 device.SetAlarmState(isAlarming);
 
                 _alarmService.CheckAndNotify(device.Name, device.Temperature);
+
+                if (_databaseService != null)
+                {
+                    await _databaseService.AddTemperatureRecordAsync(device.Id, device.Name, device.Temperature);
+                }
             }
         }
 
@@ -98,11 +115,16 @@ namespace MetalMonitor.Core
             return _devices.AsReadOnly().ToList();
         }
 
-        public void UpdateDevices()
+        private void OnMqttDisconnected(object? sender, EventArgs e)
         {
-            if (!_useMqtt)
+            _useMqtt = false;
+        }
+
+        public async Task UpdateDevicesAsync()
+        {
+            if (!_useMqtt || !_mqttService?.IsConnected == true)
             {
-                UpdateDeviceData();
+                await UpdateDeviceDataAsync();
             }
         }
 

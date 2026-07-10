@@ -19,15 +19,38 @@ namespace MetalMonitor.MqttPublisher
             var factory = new MqttFactory();
             var mqttClient = factory.CreateMqttClient();
 
-            var options = new MqttClientOptionsBuilder()
-                .WithTcpServer("localhost", 1883)
-                //.WithTcpServer("broker.emqx.io", 1883)
-                .WithClientId("MqttPublisher")
-                .WithCleanSession(true)
-                .Build();
+            var brokers = new[] { "broker.emqx.io", "broker.hivemq.com", "test.mosquitto.org" };
+            bool connected = false;
+            
+            foreach (var broker in brokers)
+            {
+                try
+                {
+                    var options = new MqttClientOptionsBuilder()
+                        .WithTcpServer(broker, 1883)
+                        .WithClientId($"MqttPublisher_{Guid.NewGuid():N}")
+                        .WithCleanSession(true)
+                        .WithTimeout(TimeSpan.FromSeconds(5))
+                        .Build();
 
-            await mqttClient.ConnectAsync(options);
-            Console.WriteLine("已连接到 MQTT Broker");
+                    Console.WriteLine($"尝试连接 {broker}...");
+                    await mqttClient.ConnectAsync(options);
+                    Console.WriteLine($"已连接到 {broker}");
+                    connected = true;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"连接 {broker} 失败: {ex.Message}");
+                }
+            }
+            
+            if (!connected)
+            {
+                Console.WriteLine("无法连接到任何MQTT Broker，按任意键退出...");
+                Console.ReadKey();
+                return;
+            }
 
             var random = new Random();
             var timer = new System.Timers.Timer(1000);

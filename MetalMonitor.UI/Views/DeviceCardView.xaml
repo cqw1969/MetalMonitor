@@ -9,8 +9,18 @@
     
     <!-- 根 Grid，命名为 RootGrid，后台代码会设置它的 DataContext -->
     <Grid x:Name="RootGrid">
-        <Border Background="#FF2D2D3F" CornerRadius="8" 
+        <Border CornerRadius="8" 
                 Width="200" Padding="10">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Background" Value="#FF2D2D3F"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Device.IsAlarming}" Value="True">
+                            <Setter Property="Background" Value="#FF4A3535"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
             <StackPanel>
                 <!-- 设备名称，现在绑定到 ViewModel 的 Device.Name -->
                 <TextBlock Text="{Binding Device.Name}" 

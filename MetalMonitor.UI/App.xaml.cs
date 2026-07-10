@@ -15,10 +15,14 @@ namespace MetalMonitor.UI
 
             services.AddSingleton<IAlarmService, AlarmService>();
             services.AddSingleton<IMqttService, MqttService>();
+            services.AddSingleton<IDatabaseService, DatabaseService>();
             services.AddSingleton<IDeviceService, DeviceService>();
             services.AddSingleton<MainViewModel>();
 
             _serviceProvider = services.BuildServiceProvider();
+
+            var databaseService = _serviceProvider.GetRequiredService<IDatabaseService>();
+            await databaseService.InitializeAsync();
 
             var deviceService = _serviceProvider.GetRequiredService<IDeviceService>() as DeviceService;
             if (deviceService != null)

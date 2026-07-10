@@ -35,11 +35,11 @@ namespace MetalMonitor.UI.ViewModels
             _dataTimer.Start();
         }
 
-        private void OnTimerElapsed(object? sender, ElapsedEventArgs e)
+        private async void OnTimerElapsed(object? sender, ElapsedEventArgs e)
         {
             try
             {
-                _deviceService.UpdateDevices();
+                await _deviceService.UpdateDevicesAsync();
 
                 Application.Current.Dispatcher.BeginInvoke(() =>
                 {

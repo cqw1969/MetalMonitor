@@ -9,6 +9,7 @@ namespace MetalMonitor.Core
         Task SubscribeAsync(string topic);
         Task PublishAsync(string topic, string payload);
         event EventHandler<MqttMessageReceivedEventArgs>? MessageReceived;
+        event EventHandler? Disconnected;
         bool IsConnected { get; }
     }
 

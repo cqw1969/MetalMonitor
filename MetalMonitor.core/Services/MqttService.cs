@@ -13,25 +13,43 @@ namespace MetalMonitor.Core
         public bool IsConnected => _mqttClient.IsConnected;
 
         public event EventHandler<MqttMessageReceivedEventArgs>? MessageReceived;
+        public event EventHandler? Disconnected;
 
         public MqttService()
         {
             var factory = new MqttFactory();
             _mqttClient = factory.CreateMqttClient();
             _mqttClient.ApplicationMessageReceivedAsync += OnMessageReceived;
+            _mqttClient.DisconnectedAsync += OnDisconnected;
         }
+
+        private readonly string[] _brokers = { "broker.emqx.io", "broker.hivemq.com", "test.mosquitto.org" };
 
         public async Task ConnectAsync()
         {
-            var options = new MqttClientOptionsBuilder()
-                //这里是wsl2的当前IP地址，确保MQTT Broker在这个地址上运行
-                //.WithTcpServer("172.22.159.39", 1883)
-                .WithTcpServer("broker.emqx.io", 1883)
-                .WithClientId($"MetalMonitor_{Guid.NewGuid():N}")
-                .WithCleanSession(true)
-                .Build();
+            foreach (var broker in _brokers)
+            {
+                try
+                {
+                    var options = new MqttClientOptionsBuilder()
+                        .WithTcpServer(broker, 1883)
+                        .WithClientId($"MetalMonitor_{Guid.NewGuid():N}")
+                        .WithCleanSession(true)
+                        .WithTimeout(TimeSpan.FromSeconds(5))
+                        .Build();
 
-            await _mqttClient.ConnectAsync(options);
+                    Console.WriteLine($"[MQTT] 尝试连接 {broker}...");
+                    await _mqttClient.ConnectAsync(options);
+                    Console.WriteLine($"[MQTT] 成功连接到 {broker}");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[MQTT] 连接 {broker} 失败: {ex.Message}");
+                }
+            }
+            
+            throw new InvalidOperationException("无法连接到任何MQTT Broker");
         }
 
         public async Task DisconnectAsync()
@@ -71,6 +89,13 @@ namespace MetalMonitor.Core
             
             Console.WriteLine($"[MQTT] 收到消息: {topic} -> {payloadString}");
             MessageReceived?.Invoke(this, new MqttMessageReceivedEventArgs(topic, payloadString));
+            await Task.CompletedTask;
+        }
+
+        private async Task OnDisconnected(MqttClientDisconnectedEventArgs e)
+        {
+            Console.WriteLine("[MQTT] 连接断开");
+            Disconnected?.Invoke(this, EventArgs.Empty);
             await Task.CompletedTask;
         }
 
