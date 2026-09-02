@@ -4,9 +4,14 @@ namespace MetalMonitor.Core
     {
         List<Device> GetDevices();
         Task UpdateDevicesAsync();
-        bool ShouldAlarm(double temperature);
+        bool ShouldAlarm(string metricName, double value);
+        double GetAlarmThreshold(string metricName);
         int MaxHistoryPoints { get; }
-        double AlarmThreshold { get; }
         string DataSource { get; }
+        string[] AvailableDataSources { get; }
+        Task SetDataSourceAsync(string source);
+        Task ReloadDevicesAsync();
+        Task ReloadMetricConfigsAsync();
+        List<MetricConfig> GetMetricConfigs();
     }
 }

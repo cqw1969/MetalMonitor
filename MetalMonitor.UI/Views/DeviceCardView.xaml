@@ -8,7 +8,7 @@
              d:DesignHeight="220" d:DesignWidth="200">
     
     <!-- 根 Grid，命名为 RootGrid，后台代码会设置它的 DataContext -->
-    <Grid x:Name="RootGrid">
+    <Grid x:Name="RootGrid" Cursor="Hand">
         <Border CornerRadius="8" 
                 Width="200" Padding="10">
             <Border.Style>

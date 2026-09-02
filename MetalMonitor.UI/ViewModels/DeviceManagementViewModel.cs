@@ -1,0 +1,181 @@
+using MetalMonitor.Core;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Windows;
+
+namespace MetalMonitor.UI.ViewModels
+{
+    public class DeviceManagementViewModel : INotifyPropertyChanged
+    {
+        private readonly IDatabaseService _databaseService;
+        private readonly IDeviceService _deviceService;
+
+        public ObservableCollection<Device> Devices { get; set; } = new();
+
+        private Device? _selectedDevice;
+        public Device? SelectedDevice
+        {
+            get => _selectedDevice;
+            set
+            {
+                _selectedDevice = value;
+                if (value != null)
+                {
+                    EditName = value.Name;
+                    EditDeviceType = value.DeviceType;
+                    EditLocation = value.Location;
+                    EditDescription = value.Description;
+                    EditIsActive = value.IsActive;
+                }
+                OnPropertyChanged();
+            }
+        }
+
+        // 编辑表单字段
+        private string _editName = string.Empty;
+        public string EditName
+        {
+            get => _editName;
+            set => SetProperty(ref _editName, value);
+        }
+
+        private string _editDeviceType = string.Empty;
+        public string EditDeviceType
+        {
+            get => _editDeviceType;
+            set => SetProperty(ref _editDeviceType, value);
+        }
+
+        private string _editLocation = string.Empty;
+        public string EditLocation
+        {
+            get => _editLocation;
+            set => SetProperty(ref _editLocation, value);
+        }
+
+        private string _editDescription = string.Empty;
+        public string EditDescription
+        {
+            get => _editDescription;
+            set => SetProperty(ref _editDescription, value);
+        }
+
+        private bool _editIsActive = true;
+        public bool EditIsActive
+        {
+            get => _editIsActive;
+            set => SetProperty(ref _editIsActive, value);
+        }
+
+        private string _statusMessage = string.Empty;
+        public string StatusMessage
+        {
+            get => _statusMessage;
+            set => SetProperty(ref _statusMessage, value);
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        public DeviceManagementViewModel(IDatabaseService databaseService, IDeviceService deviceService)
+        {
+            _databaseService = databaseService;
+            _deviceService = deviceService;
+        }
+
+        public async Task LoadDevicesAsync()
+        {
+            var devices = await _databaseService.GetAllDevicesAsync();
+            Devices.Clear();
+            foreach (var d in devices)
+            {
+                Devices.Add(d);
+            }
+            StatusMessage = $"已加载 {devices.Count} 台设备";
+        }
+
+        public async Task AddDeviceAsync()
+        {
+            if (string.IsNullOrWhiteSpace(EditName))
+            {
+                StatusMessage = "设备名称不能为空";
+                return;
+            }
+
+            var device = new Device(EditName, EditDeviceType, EditLocation, EditDescription);
+            await _databaseService.AddDeviceAsync(device);
+            await LoadDevicesAsync();
+            ClearEditForm();
+            StatusMessage = $"设备 [{device.Name}] 添加成功";
+        }
+
+        public async Task UpdateDeviceAsync()
+        {
+            if (SelectedDevice == null)
+            {
+                StatusMessage = "请先选择要修改的设备";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(EditName))
+            {
+                StatusMessage = "设备名称不能为空";
+                return;
+            }
+
+            SelectedDevice.Name = EditName;
+            SelectedDevice.DeviceType = EditDeviceType;
+            SelectedDevice.Location = EditLocation;
+            SelectedDevice.Description = EditDescription;
+            SelectedDevice.IsActive = EditIsActive;
+
+            await _databaseService.UpdateDeviceAsync(SelectedDevice);
+            await LoadDevicesAsync();
+            StatusMessage = $"设备 [{SelectedDevice.Name}] 修改成功";
+        }
+
+        public async Task DeleteDeviceAsync()
+        {
+            if (SelectedDevice == null)
+            {
+                StatusMessage = "请先选择要删除的设备";
+                return;
+            }
+
+            var deviceName = SelectedDevice.Name;
+            await _databaseService.DeleteDeviceAsync(SelectedDevice.Id);
+            await LoadDevicesAsync();
+            ClearEditForm();
+            StatusMessage = $"设备 [{deviceName}] 已删除";
+        }
+
+        public async Task ReloadMainDeviceListAsync()
+        {
+            await _deviceService.ReloadDevicesAsync();
+        }
+
+        private void ClearEditForm()
+        {
+            EditName = string.Empty;
+            EditDeviceType = string.Empty;
+            EditLocation = string.Empty;
+            EditDescription = string.Empty;
+            EditIsActive = true;
+            SelectedDevice = null;
+        }
+
+        protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+        {
+            if (EqualityComparer<T>.Default.Equals(field, value))
+                return false;
+            field = value;
+            OnPropertyChanged(propertyName);
+            return true;
+        }
+
+        protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+    }
+}

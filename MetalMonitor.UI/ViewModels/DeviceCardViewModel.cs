@@ -6,6 +6,7 @@ using MetalMonitor.Core;
 using SkiaSharp;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Windows;
 
 namespace MetalMonitor.UI.ViewModels
 {
@@ -62,19 +63,30 @@ namespace MetalMonitor.UI.ViewModels
             {
                 new Axis
                 {
-                    MinLimit = 40,
-                    MaxLimit = 100,
                     ShowSeparatorLines = false,
                     IsVisible = false
                 }
             };
+
+            ApplyMetricLimits();
+        }
+
+        // 根据指标配置更新 Y 轴范围（与指标设置中的最值一致）
+        public void ApplyMetricLimits()
+        {
+            var tempConfig = _deviceService.GetMetricConfigs().FirstOrDefault(c => c.Name == "Temperature");
+            if (tempConfig != null)
+            {
+                YAxes[0].MinLimit = tempConfig.MinValue;
+                YAxes[0].MaxLimit = tempConfig.MaxValue;
+            }
         }
 
         public void AddTemperaturePoint(double temperature)
         {
             TemperaturePoints.Add(new ObservablePoint(TemperaturePoints.Count, temperature));
 
-            if (_deviceService.ShouldAlarm(temperature))
+            if (_deviceService.ShouldAlarm("Temperature", temperature))
             {
                 AlarmPoints.Add(new ObservablePoint(TemperaturePoints.Count - 1, temperature));
             }
@@ -101,7 +113,14 @@ namespace MetalMonitor.UI.ViewModels
         {
             if (e.PropertyName == nameof(Device.Temperature))
             {
-                AddTemperaturePoint(Device.Temperature);
+                if (Application.Current != null && !Application.Current.Dispatcher.CheckAccess())
+                {
+                    Application.Current.Dispatcher.BeginInvoke(() => AddTemperaturePoint(Device.Temperature));
+                }
+                else
+                {
+                    AddTemperaturePoint(Device.Temperature);
+                }
             }
         }
 
