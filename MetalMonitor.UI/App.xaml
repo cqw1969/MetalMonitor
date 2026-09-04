@@ -12,6 +12,7 @@
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#FF4A90D9"/>
         <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="White"/>
         <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#FF3D3D5F"/>
+        <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#FFE0E0E0"/>
 
         <!-- ============ ComboBox 自定义模板（黑底白字，选中蓝色） ============ -->
         <Style TargetType="ComboBox">
@@ -158,9 +159,18 @@
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="checkMark" Property="Visibility" Value="Visible"/>
                             </Trigger>
+                            <!-- 鼠标靠近：白底，勾反色为黑 -->
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="box" Property="BorderBrush" Value="#FF4A90D9"/>
+                                <Setter TargetName="box" Property="Background" Value="White"/>
+                                <Setter TargetName="box" Property="BorderBrush" Value="White"/>
                             </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True"/>
+                                    <Condition Property="IsChecked" Value="True"/>
+                                </MultiTrigger.Conditions>
+                                <Setter TargetName="checkMark" Property="Stroke" Value="Black"/>
+                            </MultiTrigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Foreground" Value="#FF666677"/>
                                 <Setter TargetName="box" Property="Opacity" Value="0.5"/>
@@ -171,9 +181,12 @@
             </Setter>
         </Style>
 
+        <!-- DataGrid 内 CheckBox：继承全局样式、居中、纯展示不可交互 -->
         <Style x:Key="DarkDataGridCheckBox" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
             <Setter Property="HorizontalAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="IsHitTestVisible" Value="False"/>
+            <Setter Property="Focusable" Value="False"/>
         </Style>
 
         <!-- ============ DatePicker 自定义模板（黑底白字 + 深色按钮） ============ -->

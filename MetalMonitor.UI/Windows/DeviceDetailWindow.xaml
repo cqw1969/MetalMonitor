@@ -5,7 +5,8 @@
         xmlns:vm="clr-namespace:MetalMonitor.UI.ViewModels"
         xmlns:core="clr-namespace:MetalMonitor.Core;assembly=MetalMonitor.core"
         Title="设备详情" Height="700" Width="900"
-        Background="#FF161622" WindowStartupLocation="CenterOwner">
+        Background="#FF161622" WindowStartupLocation="CenterOwner"
+        Activated="OnActivated">
     <Grid Background="#FF1E1E2E">
         <Grid Margin="20">
             <Grid.RowDefinitions>
@@ -18,8 +19,10 @@
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                     <TextBlock Text="{Binding Device.Name}" FontSize="24" Foreground="White" Margin="0,0,20,0"/>
                     <TextBlock FontSize="20" Foreground="LightGreen">
-                        <Run Text="{Binding Device.Temperature, StringFormat={}{0:F1}}"/>
-                        <Run Text="℃" FontSize="14"/>
+                        <Run Text="{Binding MetricDisplayName, Mode=OneWay}" Foreground="#FF9999AA" FontSize="14"/>
+                        <Run Text=": "/>
+                        <Run Text="{Binding CurrentValueText, Mode=OneWay}"/>
+                        <Run Text="{Binding CurrentMetricUnit, Mode=OneWay}" FontSize="14"/>
                     </TextBlock>
                 </StackPanel>
             </Border>

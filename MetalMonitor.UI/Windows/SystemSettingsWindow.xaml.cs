@@ -37,9 +37,17 @@ namespace MetalMonitor.UI.Windows
 
         protected override void OnClosed(EventArgs e)
         {
-            // 窗口关闭后刷新设备服务的指标配置和报警阈值
-            _viewModel.ReloadServiceConfigsAsync().ConfigureAwait(false);
+            // 指标增删改操作已在各自处理中即时同步设备服务配置，
+            // 此处不再做 fire-and-forget 异步刷新（曾导致关闭窗口时无报错闪退）
             base.OnClosed(e);
+            // 非模态窗口关闭后显式激活主窗口，避免焦点跳到 VS 或其他后台窗口
+            if (Owner != null)
+            {
+                Owner.Activate();
+                Owner.Topmost = true;
+                Owner.Topmost = false;
+                Owner.Focus();
+            }
         }
     }
 }

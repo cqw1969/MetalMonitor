@@ -2,6 +2,7 @@ using MetalMonitor.Core;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -35,6 +36,26 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         public ObservableCollection<string> AlarmLogs { get; set; } = new();
+
+        // 可选指标列表（含停用指标，停用后卡片显示灰色失效态）
+        public ObservableCollection<MetricConfig> AvailableMetrics { get; } = new();
+
+        private string _selectedMetricName = "Temperature";
+        public string SelectedMetricName
+        {
+            get => _selectedMetricName;
+            set
+            {
+                if (_selectedMetricName == value) return;
+                _selectedMetricName = value;
+                OnPropertyChanged();
+                // 切换所有卡片展示的指标
+                foreach (var card in DeviceCardViewModels)
+                {
+                    card.MetricName = value;
+                }
+            }
+        }
 
         public string DataSource => _deviceService.DataSource;
 
@@ -92,20 +113,47 @@ namespace MetalMonitor.UI.ViewModels
 
                 Application.Current.Dispatcher.BeginInvoke(() =>
                 {
-                    var currentDevices = _deviceService.GetDevices();
-                    if (DeviceCardViewModels.Count != currentDevices.Count)
+                    try
                     {
-                        DeviceCardViewModels.Clear();
+                        var currentDevices = _deviceService.GetDevices();
+                        var currentIds = currentDevices.Select(d => d.Id).ToHashSet();
+
+                        // 移除已删除设备的卡片（只释放被删的，保留其他卡片历史曲线）
+                        for (int i = DeviceCardViewModels.Count - 1; i >= 0; i--)
+                        {
+                            if (!currentIds.Contains(DeviceCardViewModels[i].Device.Id))
+                            {
+                                DeviceCardViewModels[i].Dispose();
+                                DeviceCardViewModels.RemoveAt(i);
+                            }
+                        }
+
+                        // 追加新增设备的卡片
+                        var existingIds = DeviceCardViewModels.Select(c => c.Device.Id).ToHashSet();
                         foreach (var device in currentDevices)
                         {
-                            DeviceCardViewModels.Add(new DeviceCardViewModel(device, _deviceService));
+                            if (!existingIds.Contains(device.Id))
+                            {
+                                DeviceCardViewModels.Add(new DeviceCardViewModel(device, _deviceService)
+                                {
+                                    MetricName = _selectedMetricName
+                                });
+                            }
+                        }
+
+                        // 刷新指标下拉列表（配置变更后生效）
+                        RefreshAvailableMetrics();
+
+                        // 刷新设备卡片 Y 轴范围与启停状态（设置变更后生效）
+                        foreach (var card in DeviceCardViewModels)
+                        {
+                            card.ApplyMetricLimits();
                         }
                     }
-
-                    // 刷新设备卡片 Y 轴范围（设置变更后生效）
-                    foreach (var card in DeviceCardViewModels)
+                    catch (Exception dex)
                     {
-                        card.ApplyMetricLimits();
+                        // Dispatcher 回调中的异常若不捕获会导致无报错闪退
+                        AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✗ 界面刷新异常：{dex.Message}");
                     }
                 });
             }
@@ -146,6 +194,26 @@ namespace MetalMonitor.UI.ViewModels
         public IDeviceService GetDeviceService()
         {
             return _deviceService;
+        }
+
+        // 检测指标配置变化并刷新下拉列表（配置增删/改名后自动同步）
+        private void RefreshAvailableMetrics()
+        {
+            var configs = _deviceService.GetMetricConfigs();
+            bool changed = configs.Count != AvailableMetrics.Count
+                || configs.Any(c => !AvailableMetrics.Any(a => a.Name == c.Name));
+
+            if (!changed) return;
+
+            AvailableMetrics.Clear();
+            foreach (var c in configs)
+                AvailableMetrics.Add(c);
+
+            // 当前选中的指标已不存在时，回退到第一个指标
+            if (!configs.Any(c => c.Name == _selectedMetricName) && configs.Count > 0)
+            {
+                SelectedMetricName = configs[0].Name;
+            }
         }
 
         public async Task SwitchDataSourceAsync(string source)
@@ -201,10 +269,24 @@ namespace MetalMonitor.UI.ViewModels
                 }
             }
 
-            dialog.Show(IntPtr.Zero);
+            // 用户取消对话框时 Show 返回 ERROR_CANCELLED (0x800704C7)，
+            // COM interop 会将其转为异常抛出，这里捕获并视为正常取消
+            try
+            {
+                dialog.Show(IntPtr.Zero);
+            }
+            catch (COMException ex) when (ex.ErrorCode == ErrorCancelled)
+            {
+                Marshal.ReleaseComObject(dialog);
+                return null;
+            }
 
             dialog.GetResult(out var item);
-            if (item == null) return null;
+            if (item == null)
+            {
+                Marshal.ReleaseComObject(dialog);
+                return null;
+            }
 
             item.GetDisplayName(SIGDN.SIGDN_FILESYSPATH, out var path);
             Marshal.ReleaseComObject(item);
@@ -226,6 +308,9 @@ namespace MetalMonitor.UI.ViewModels
             SHCreateItemFromParsingName(path, IntPtr.Zero, ref guid, out var item);
             return item;
         }
+
+        // 用户取消对话框时 Shell 返回的 HRESULT，对应 winerror.h 的 ERROR_CANCELLED
+        private const int ErrorCancelled = unchecked((int)0x800704C7);
 
         [ComImport]
         [Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]

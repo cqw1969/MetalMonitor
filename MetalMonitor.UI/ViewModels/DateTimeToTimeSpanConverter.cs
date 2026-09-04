@@ -54,4 +54,20 @@ namespace MetalMonitor.UI.ViewModels
             throw new NotImplementedException();
         }
     }
+
+    // 反转：true -> 折叠，false -> 可见（用于"已停用"等提示）
+    public class InverseBooleanToVisibilityConverter : IValueConverter
+    {
+        public static InverseBooleanToVisibilityConverter Instance { get; } = new InverseBooleanToVisibilityConverter();
+
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return value is bool boolean && boolean ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
+        }
+    }
 }

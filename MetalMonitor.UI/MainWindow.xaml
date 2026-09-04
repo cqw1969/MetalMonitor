@@ -23,34 +23,22 @@
                     <Button Content="系统设置" Click="OnOpenSystemSettings" Background="#FFFFB86B" Foreground="#FF161622" Padding="12,6" FontSize="12" FontWeight="SemiBold" Margin="0,0,10,0" Cursor="Hand"/>
                     <Border CornerRadius="4" Background="#FF252533" Padding="8,4" Margin="0,0,10,0">
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="监控指标：" FontSize="12" Foreground="#FF666677" VerticalAlignment="Center"/>
+                            <ComboBox ItemsSource="{Binding AvailableMetrics}"
+                                      SelectedValue="{Binding SelectedMetricName, Mode=TwoWay}"
+                                      SelectedValuePath="Name"
+                                      DisplayMemberPath="DisplayName"
+                                      FontSize="12" FontWeight="SemiBold" MinWidth="100"
+                                      Cursor="Hand"/>
+                        </StackPanel>
+                    </Border>
+                    <Border CornerRadius="4" Background="#FF252533" Padding="8,4" Margin="0,0,10,0">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock Text="数据来源：" FontSize="12" Foreground="#FF666677" VerticalAlignment="Center"/>
                             <ComboBox ItemsSource="{Binding DataSourceOptions}"
                                       SelectedItem="{Binding SelectedDataSource, Mode=TwoWay}"
-                                      Background="#FF2D2D3F" Foreground="White" BorderBrush="#FF3D3D4F"
-                                      FontSize="12" FontWeight="SemiBold" Padding="6,2" MinWidth="90"
-                                      Cursor="Hand">
-                                <ComboBox.Resources>
-                                    <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}" Color="#FF2D2D3F"/>
-                                    <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#FF2D2D3F"/>
-                                    <SolidColorBrush x:Key="{x:Static SystemColors.WindowTextBrushKey}" Color="White"/>
-                                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#FF4A90D9"/>
-                                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="White"/>
-                                    <Style TargetType="ComboBoxItem">
-                                        <Setter Property="Foreground" Value="White"/>
-                                        <Setter Property="Background" Value="#FF2D2D3F"/>
-                                        <Setter Property="Padding" Value="8,4"/>
-                                        <Style.Triggers>
-                                            <Trigger Property="IsSelected" Value="True">
-                                                <Setter Property="Background" Value="#FF4A90D9"/>
-                                                <Setter Property="Foreground" Value="White"/>
-                                            </Trigger>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter Property="Background" Value="#FF444455"/>
-                                            </Trigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ComboBox.Resources>
-                            </ComboBox>
+                                      FontSize="12" FontWeight="SemiBold" MinWidth="90"
+                                      Cursor="Hand"/>
                         </StackPanel>
                     </Border>
                     <Border CornerRadius="4" Background="#FF252533" Padding="8,4" Margin="0,0,10,0">

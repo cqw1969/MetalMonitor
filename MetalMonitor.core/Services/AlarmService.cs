@@ -4,6 +4,7 @@ namespace MetalMonitor.Core
 {
     public class AlarmService : IAlarmService
     {
+        private readonly object _lock = new();
         private readonly Dictionary<string, MetricConfig> _metricConfigs = new();
         private readonly Dictionary<string, bool> _previousAlarmStates = new();
 
@@ -11,28 +12,37 @@ namespace MetalMonitor.Core
 
         public bool ShouldAlarm(string metricName, double value)
         {
-            if (_metricConfigs.TryGetValue(metricName, out var config))
+            lock (_lock)
             {
-                if (!config.AlarmEnabled) return false;
-                return config.AlarmDirection == AlarmDirection.Above
-                    ? value >= config.AlarmThreshold
-                    : value <= config.AlarmThreshold;
+                if (_metricConfigs.TryGetValue(metricName, out var config))
+                {
+                    if (!config.AlarmEnabled) return false;
+                    return config.AlarmDirection == AlarmDirection.Above
+                        ? value >= config.AlarmThreshold
+                        : value <= config.AlarmThreshold;
+                }
+                return false;
             }
-            return false;
         }
 
         public double GetAlarmThreshold(string metricName)
         {
-            if (_metricConfigs.TryGetValue(metricName, out var config))
-                return config.AlarmThreshold;
-            return 0;
+            lock (_lock)
+            {
+                if (_metricConfigs.TryGetValue(metricName, out var config))
+                    return config.AlarmThreshold;
+                return 0;
+            }
         }
 
         public void UpdateThresholds(Dictionary<string, MetricConfig> configs)
         {
-            _metricConfigs.Clear();
-            foreach (var kvp in configs)
-                _metricConfigs[kvp.Key] = kvp.Value;
+            lock (_lock)
+            {
+                _metricConfigs.Clear();
+                foreach (var kvp in configs)
+                    _metricConfigs[kvp.Key] = kvp.Value;
+            }
         }
 
         public void CheckAndNotify(string deviceName, string metricName, double value)
@@ -40,17 +50,26 @@ namespace MetalMonitor.Core
             bool currentAlarm = ShouldAlarm(metricName, value);
             string key = $"{deviceName}_{metricName}";
 
-            if (!_previousAlarmStates.ContainsKey(key))
+            bool? previousAlarm = null;
+            lock (_lock)
             {
-                _previousAlarmStates[key] = currentAlarm;
-                return;
+                if (!_previousAlarmStates.TryGetValue(key, out var prev))
+                {
+                    _previousAlarmStates[key] = currentAlarm;
+                }
+                else
+                {
+                    previousAlarm = prev;
+                }
             }
 
-            bool previousAlarm = _previousAlarmStates[key];
-
-            if (currentAlarm != previousAlarm)
+            // 事件回调放到锁外，避免与 UI 线程等待形成死锁
+            if (previousAlarm.HasValue && previousAlarm.Value != currentAlarm)
             {
-                _previousAlarmStates[key] = currentAlarm;
+                lock (_lock)
+                {
+                    _previousAlarmStates[key] = currentAlarm;
+                }
                 AlarmStateChanged?.Invoke(deviceName, metricName, currentAlarm, value);
             }
         }

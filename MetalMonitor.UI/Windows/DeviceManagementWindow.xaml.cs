@@ -1,5 +1,6 @@
 using MetalMonitor.Core;
 using MetalMonitor.UI.ViewModels;
+using System;
 using System.Windows;
 
 namespace MetalMonitor.UI.Windows
@@ -13,17 +14,32 @@ namespace MetalMonitor.UI.Windows
             InitializeComponent();
             _viewModel = viewModel;
             DataContext = _viewModel;
-            Loaded += async (s, e) => await _viewModel.LoadDevicesAsync();
+            Loaded += async (s, e) =>
+            {
+                try { await _viewModel.LoadDevicesAsync(); }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"加载设备列表失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            };
         }
 
         private async void OnAddDevice(object sender, RoutedEventArgs e)
         {
-            await _viewModel.AddDeviceAsync();
+            try { await _viewModel.AddDeviceAsync(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"添加设备失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         private async void OnUpdateDevice(object sender, RoutedEventArgs e)
         {
-            await _viewModel.UpdateDeviceAsync();
+            try { await _viewModel.UpdateDeviceAsync(); }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"修改设备失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         private async void OnDeleteDevice(object sender, RoutedEventArgs e)
@@ -31,15 +47,26 @@ namespace MetalMonitor.UI.Windows
             var result = MessageBox.Show("确定要删除该设备吗？", "确认删除", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (result == MessageBoxResult.Yes)
             {
-                await _viewModel.DeleteDeviceAsync();
+                try { await _viewModel.DeleteDeviceAsync(); }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"删除设备失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
         }
 
         protected override void OnClosed(EventArgs e)
         {
-            // 窗口关闭后刷新主界面的设备列表
-            _viewModel.ReloadMainDeviceListAsync().ConfigureAwait(false);
             base.OnClosed(e);
+            // 非模态窗口关闭后显式激活主窗口，避免焦点跳到 VS 或其他后台窗口
+            if (Owner != null)
+            {
+                Owner.Activate();
+                // Topmost 技巧确保窗口被提到前台并获取焦点
+                Owner.Topmost = true;
+                Owner.Topmost = false;
+                Owner.Focus();
+            }
         }
     }
 }

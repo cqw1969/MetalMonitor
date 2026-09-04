@@ -105,6 +105,8 @@ namespace MetalMonitor.UI.ViewModels
             var device = new Device(EditName, EditDeviceType, EditLocation, EditDescription);
             await _databaseService.AddDeviceAsync(device);
             await LoadDevicesAsync();
+            // 立即同步主界面设备列表，使定时器下次刷新即可添加新卡片
+            await _deviceService.ReloadDevicesAsync();
             ClearEditForm();
             StatusMessage = $"设备 [{device.Name}] 添加成功";
         }
@@ -131,6 +133,8 @@ namespace MetalMonitor.UI.ViewModels
 
             await _databaseService.UpdateDeviceAsync(SelectedDevice);
             await LoadDevicesAsync();
+            // 同步主界面设备列表，使设备属性变更立即生效
+            await _deviceService.ReloadDevicesAsync();
             StatusMessage = $"设备 [{SelectedDevice.Name}] 修改成功";
         }
 
@@ -145,6 +149,8 @@ namespace MetalMonitor.UI.ViewModels
             var deviceName = SelectedDevice.Name;
             await _databaseService.DeleteDeviceAsync(SelectedDevice.Id);
             await LoadDevicesAsync();
+            // 同步主界面设备列表，使定时器下次刷新即可移除已删除设备的卡片
+            await _deviceService.ReloadDevicesAsync();
             ClearEditForm();
             StatusMessage = $"设备 [{deviceName}] 已删除";
         }

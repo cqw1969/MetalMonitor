@@ -39,8 +39,12 @@ namespace MetalMonitor.UI.ViewModels
                     EditIsActive = value.IsActive;
                 }
                 OnPropertyChanged();
+                OnPropertyChanged(nameof(HasSelectedConfig));
             }
         }
+
+        // 是否已选中已存在的指标（控制修改/删除按钮可用性）
+        public bool HasSelectedConfig => _selectedMetricConfig != null;
 
         // 编辑表单字段
         private string _editName = string.Empty;
@@ -163,6 +167,8 @@ namespace MetalMonitor.UI.ViewModels
 
             await _databaseService.AddMetricConfigAsync(config);
             await LoadMetricConfigsAsync();
+            // 立即同步设备服务的指标配置和报警阈值，使主界面定时器下次刷新即生效
+            await _deviceService.ReloadMetricConfigsAsync();
             ClearEditForm();
             StatusMessage = $"指标 [{config.Name}] 添加成功";
         }
@@ -202,6 +208,8 @@ namespace MetalMonitor.UI.ViewModels
             var updatedName = SelectedMetricConfig.Name;
             await _databaseService.UpdateMetricConfigAsync(SelectedMetricConfig);
             await LoadMetricConfigsAsync();
+            // 同步设备服务的指标配置和报警阈值，使变更立即生效
+            await _deviceService.ReloadMetricConfigsAsync();
             StatusMessage = $"指标 [{updatedName}] 修改成功";
         }
 
@@ -216,6 +224,8 @@ namespace MetalMonitor.UI.ViewModels
             var configName = SelectedMetricConfig.Name;
             await _databaseService.DeleteMetricConfigAsync(SelectedMetricConfig.Id);
             await LoadMetricConfigsAsync();
+            // 同步设备服务的指标配置和报警阈值，使删除立即生效
+            await _deviceService.ReloadMetricConfigsAsync();
             ClearEditForm();
             StatusMessage = $"指标 [{configName}] 已删除";
         }

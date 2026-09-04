@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
 
 namespace MetalMonitor.Core
@@ -14,6 +16,15 @@ namespace MetalMonitor.Core
         private double _temperature;
         private bool _isAlarming;
         private DateTime _createdAt;
+
+        // 各指标的当前值（指标名 -> 值），跨线程访问
+        private readonly ConcurrentDictionary<string, double> _metricValues = new();
+
+        // 各指标的报警状态（指标名 -> 是否报警）
+        private readonly ConcurrentDictionary<string, bool> _metricAlarms = new();
+
+        // 指标值更新事件：参数为指标名和最新值
+        public event Action<string, double>? MetricValueChanged;
 
         public string Id
         {
@@ -73,6 +84,35 @@ namespace MetalMonitor.Core
         public void SetAlarmState(bool isAlarming)
         {
             IsAlarming = isAlarming;
+        }
+
+        // 写入某指标的当前值（由服务层调用）
+        public void SetMetricValue(string metricName, double value)
+        {
+            _metricValues[metricName] = value;
+            MetricValueChanged?.Invoke(metricName, value);
+            OnPropertyChanged(nameof(MetricValues));
+        }
+
+        // 读取某指标当前值；无数据返回 NaN
+        public double GetMetricValue(string metricName)
+        {
+            return _metricValues.TryGetValue(metricName, out var v) ? v : double.NaN;
+        }
+
+        // 所有指标当前值快照（供 UI 绑定）
+        public IReadOnlyDictionary<string, double> MetricValues => _metricValues;
+
+        // 写入某指标的报警状态，并汇总设备整体报警状态
+        public void SetMetricAlarmState(string metricName, bool isAlarming)
+        {
+            _metricAlarms[metricName] = isAlarming;
+            IsAlarming = _metricAlarms.Values.Any(a => a);
+        }
+
+        public bool IsMetricAlarming(string metricName)
+        {
+            return _metricAlarms.TryGetValue(metricName, out var a) && a;
         }
 
         // 无参构造函数（用于数据库读取等场景）

@@ -61,12 +61,8 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <Style x:Key="DarkCheckBox" TargetType="CheckBox">
-            <Setter Property="Foreground" Value="#FFE0E0E0"/>
-            <Setter Property="Background" Value="#FF2D2D3F"/>
-            <Setter Property="BorderBrush" Value="#FF3D3D4F"/>
+        <Style x:Key="DarkCheckBox" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
             <Setter Property="FontSize" Value="13"/>
-            <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
     </Window.Resources>
 
@@ -95,8 +91,7 @@
                       CanUserDeleteRows="False"
                       IsReadOnly="True"
                       Background="Transparent"
-                      RowBackground="#FF1E1E2E"
-                      AlternatingRowBackground="#FF252533"
+                      AlternationCount="2"
                       HeadersVisibility="Column"
                       GridLinesVisibility="Horizontal"
                       BorderThickness="0"
@@ -114,9 +109,27 @@
                         <Setter Property="BorderThickness" Value="0,0,1,1"/>
                     </Style>
                 </DataGrid.ColumnHeaderStyle>
+                <!-- 行样式：交替底色；选中时仅白色描边，背景与文字颜色不变 -->
+                <DataGrid.RowStyle>
+                    <Style TargetType="DataGridRow">
+                        <Setter Property="Background" Value="#FF1E1E2E"/>
+                        <Setter Property="Foreground" Value="#FFE0E0E0"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Style.Triggers>
+                            <Trigger Property="AlternationIndex" Value="1">
+                                <Setter Property="Background" Value="#FF252533"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter Property="BorderBrush" Value="White"/>
+                                <Setter Property="BorderThickness" Value="1"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </DataGrid.RowStyle>
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
                         <Setter Property="Padding" Value="10,0"/>
+                        <Setter Property="Foreground" Value="#FFE0E0E0"/>
                         <Setter Property="BorderBrush" Value="#FF2D2D3F"/>
                         <Setter Property="BorderThickness" Value="0,0,0,1"/>
                         <Setter Property="Template">
@@ -128,12 +141,6 @@
                                 </ControlTemplate>
                             </Setter.Value>
                         </Setter>
-                        <Style.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter Property="Background" Value="#FF3D3D5F"/>
-                                <Setter Property="Foreground" Value="White"/>
-                            </Trigger>
-                        </Style.Triggers>
                     </Style>
                 </DataGrid.CellStyle>
                 <DataGrid.Columns>
@@ -235,8 +242,10 @@
                 <!-- 按钮行 -->
                 <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Left">
                     <Button Content="添加指标" Style="{StaticResource DarkButton}" Click="OnAddMetric" Margin="0,0,10,0"/>
-                    <Button Content="修改指标" Style="{StaticResource DarkButton}" Click="OnUpdateMetric" Margin="0,0,10,0"/>
-                    <Button Content="删除指标" Style="{StaticResource DangerButton}" Click="OnDeleteMetric"/>
+                    <Button Content="修改指标" Style="{StaticResource DarkButton}" Click="OnUpdateMetric" Margin="0,0,10,0"
+                            IsEnabled="{Binding HasSelectedConfig}"/>
+                    <Button Content="删除指标" Style="{StaticResource DangerButton}" Click="OnDeleteMetric"
+                            IsEnabled="{Binding HasSelectedConfig}"/>
                 </StackPanel>
             </Grid>
         </Border>
