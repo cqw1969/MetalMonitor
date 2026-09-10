@@ -13,9 +13,12 @@ namespace MetalMonitor.UI
     {
         private ServiceProvider? _serviceProvider;
 
+        // 运行时异常统一写入 logs/ 目录的滚动日志：单文件 5MB，超 10 个删除最早 5 个
+        private static readonly RollingFileLogger _logger = new();
+
         public App()
         {
-            // 全局异常处理：防止未处理异常导致无报错闪退，记录到 error_fix_log.md
+            // 全局异常处理：防止未处理异常导致无报错闪退，记录到 logs/ 滚动日志文件
             DispatcherUnhandledException += OnDispatcherUnhandledException;
             AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
             TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
@@ -25,7 +28,7 @@ namespace MetalMonitor.UI
         private void OnDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
         {
             LogError("UI线程未处理异常", e.Exception);
-            MessageBox.Show($"发生异常：{e.Exception.Message}\n\n详情已记录到 error_fix_log.md", "错误",
+            MessageBox.Show($"发生异常：{e.Exception.Message}\n\n详情已记录到 logs 目录下的日志文件", "错误",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             e.Handled = true;
         }
@@ -44,33 +47,10 @@ namespace MetalMonitor.UI
             e.SetObserved();
         }
 
-        // 记录错误到 error_fix_log.md（开发阶段放解决方案同级目录，部署阶段回退到程序运行目录）
+        // 运行时异常写入 logs/ 滚动日志文件（5MB 滚动、按日期时间命名、超限自动清理）
         private static void LogError(string source, Exception ex)
         {
-            try
-            {
-                // 从输出目录向上查找解决方案目录
-                var dir = AppDomain.CurrentDomain.BaseDirectory;
-                var slnDir = dir;
-                while (!string.IsNullOrEmpty(slnDir) && !File.Exists(Path.Combine(slnDir, "MetalMonitor.sln")))
-                    slnDir = Path.GetDirectoryName(slnDir);
-                if (string.IsNullOrEmpty(slnDir)) slnDir = dir;
-
-                var path = Path.Combine(slnDir, "error_fix_log.md");
-                var sb = new StringBuilder();
-                sb.AppendLine($"## [{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {ex.GetType().Name} ({source})");
-                sb.AppendLine($"- 消息: {ex.Message}");
-                sb.AppendLine($"- 堆栈跟踪:");
-                sb.AppendLine("```");
-                sb.AppendLine(ex.StackTrace ?? "(无堆栈信息)");
-                sb.AppendLine("```");
-                sb.AppendLine();
-                File.AppendAllText(path, sb.ToString());
-            }
-            catch
-            {
-                // 记录日志失败时不影响程序运行
-            }
+            _logger.Log(source, ex);
         }
 
         protected override async void OnStartup(StartupEventArgs e)

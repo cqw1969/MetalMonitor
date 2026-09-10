@@ -2,5 +2,5 @@
   "DatabasePath": "D:\\Data",
   "BatchSize": 50,
   "RefreshInterval": 1000,
-  "DataSource": "\u6A21\u62DF\u6570\u636E"
+  "DataSource": "MQTT"
 }

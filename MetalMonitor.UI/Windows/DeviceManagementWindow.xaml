@@ -95,14 +95,14 @@
                       CanUserDeleteRows="False"
                       IsReadOnly="True"
                       Background="Transparent"
-                      RowBackground="#FF1E1E2E"
-                      AlternatingRowBackground="#FF252533"
+                      AlternationCount="2"
                       HeadersVisibility="Column"
                       GridLinesVisibility="Horizontal"
                       BorderThickness="0"
                       SelectionMode="Single"
                       Foreground="#FFE0E0E0"
-                      ColumnHeaderHeight="36">
+                      ColumnHeaderHeight="36"
+                      PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                 <DataGrid.ColumnHeaderStyle>
                     <Style TargetType="DataGridColumnHeader">
                         <Setter Property="Background" Value="#FF2D2D3F"/>
@@ -114,9 +114,27 @@
                         <Setter Property="BorderThickness" Value="0,0,1,1"/>
                     </Style>
                 </DataGrid.ColumnHeaderStyle>
+                <!-- 行样式：交替底色；选中时仅白色描边，背景与文字颜色不变（与系统设置界面保持一致） -->
+                <DataGrid.RowStyle>
+                    <Style TargetType="DataGridRow">
+                        <Setter Property="Background" Value="#FF1E1E2E"/>
+                        <Setter Property="Foreground" Value="#FFE0E0E0"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Style.Triggers>
+                            <Trigger Property="AlternationIndex" Value="1">
+                                <Setter Property="Background" Value="#FF252533"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter Property="BorderBrush" Value="White"/>
+                                <Setter Property="BorderThickness" Value="1"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </DataGrid.RowStyle>
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
                         <Setter Property="Padding" Value="10,0"/>
+                        <Setter Property="Foreground" Value="#FFE0E0E0"/>
                         <Setter Property="BorderBrush" Value="#FF2D2D3F"/>
                         <Setter Property="BorderThickness" Value="0,0,0,1"/>
                         <Setter Property="Template">
@@ -128,12 +146,6 @@
                                 </ControlTemplate>
                             </Setter.Value>
                         </Setter>
-                        <Style.Triggers>
-                            <Trigger Property="IsSelected" Value="True">
-                                <Setter Property="Background" Value="#FF3D3D5F"/>
-                                <Setter Property="Foreground" Value="White"/>
-                            </Trigger>
-                        </Style.Triggers>
                     </Style>
                 </DataGrid.CellStyle>
                 <DataGrid.Columns>
@@ -200,8 +212,10 @@
                 <!-- 按钮行 -->
                 <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Left">
                     <Button Content="添加设备" Style="{StaticResource DarkButton}" Click="OnAddDevice" Margin="0,0,10,0"/>
-                    <Button Content="修改设备" Style="{StaticResource DarkButton}" Click="OnUpdateDevice" Margin="0,0,10,0"/>
-                    <Button Content="删除设备" Style="{StaticResource DangerButton}" Click="OnDeleteDevice"/>
+                    <Button Content="修改设备" Style="{StaticResource DarkButton}" Click="OnUpdateDevice" Margin="0,0,10,0"
+                            IsEnabled="{Binding HasSelectedDevice}"/>
+                    <Button Content="删除设备" Style="{StaticResource DangerButton}" Click="OnDeleteDevice"
+                            IsEnabled="{Binding HasSelectedDevice}"/>
                 </StackPanel>
             </Grid>
         </Border>

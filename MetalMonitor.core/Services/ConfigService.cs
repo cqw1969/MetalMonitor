@@ -49,14 +49,19 @@ namespace MetalMonitor.Core
             }
         }
 
-        public ConfigService()
+        public ConfigService() : this(FindConfigPath())
         {
-            _configPath = FindConfigPath();
-            
+        }
+
+        // 显式指定配置文件路径（便于单元测试隔离与自定义部署目录）
+        public ConfigService(string configPath)
+        {
+            _configPath = configPath;
+
             LoadConfig();
         }
 
-        private string FindConfigPath()
+        private static string FindConfigPath()
         {
             var assemblyPath = Assembly.GetExecutingAssembly().Location;
             var appDirectory = Path.GetDirectoryName(assemblyPath) ?? AppDomain.CurrentDomain.BaseDirectory;

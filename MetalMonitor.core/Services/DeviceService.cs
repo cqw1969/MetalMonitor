@@ -1,8 +1,9 @@
 using System.Text.Json;
+using System.Threading;
 
 namespace MetalMonitor.Core
 {
-    public class DeviceService : IDeviceService
+    public class DeviceService : IDeviceService, IDisposable
     {
         private readonly List<Device> _devices;
         private readonly object _devicesLock = new();
@@ -17,18 +18,30 @@ namespace MetalMonitor.Core
         private List<MetricConfig> _metricConfigs = new();
         private string _selectedDataSource = "模拟数据";
 
+        // 批量写入缓冲：达到 BatchSize 条后自动落盘，退出/切换时立即 flush
+        private readonly List<DataRecord> _pendingBatch = new();
+        private readonly object _batchLock = new();
+        private readonly SemaphoreSlim _flushLock = new(1, 1);
+        private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(60);
+        private int _batchSize;
+        private DateTime _lastCheckpointUtc = DateTime.UtcNow;
+        private bool _disposed = false;
+
         public int MaxHistoryPoints { get; } = 60;
 
         public string DataSource => _selectedDataSource;
 
         public string[] AvailableDataSources { get; } = new[] { "模拟数据", "MQTT", "串口" };
 
+        // 注意：public 构造函数集合必须保证 DI 容器能选出唯一"参数最多且可解析"的构造函数，
+        // 不要给 public 构造函数加可选参数——可选参数会被 DI 视为可满足，引发构造函数歧义异常。
+        // 仅供单元测试使用的构造函数一律声明为 internal（对 DI 不可见）。
         public DeviceService(IAlarmService alarmService)
         {
             _alarmService = alarmService;
             _devices = new List<Device>();
             _configService = new ConfigService();
-            _selectedDataSource = _configService.DataSource;
+            InitializeBatchSettings();
         }
 
         public DeviceService(IAlarmService alarmService, IMqttService mqttService) : this(alarmService)
@@ -46,6 +59,22 @@ namespace MetalMonitor.Core
         public DeviceService(IAlarmService alarmService, IMqttService mqttService, IDatabaseService databaseService) : this(alarmService, mqttService)
         {
             _databaseService = databaseService;
+        }
+
+        // 单元测试专用：显式注入配置（internal：DI 容器看不到，不会参与构造函数选择）
+        internal DeviceService(IAlarmService alarmService, IDatabaseService databaseService, ConfigService configService)
+        {
+            _alarmService = alarmService;
+            _devices = new List<Device>();
+            _databaseService = databaseService;
+            _configService = configService;
+            InitializeBatchSettings();
+        }
+
+        private void InitializeBatchSettings()
+        {
+            _batchSize = _configService.BatchSize > 0 ? _configService.BatchSize : 50;
+            _selectedDataSource = _configService.DataSource;
         }
 
         public async Task InitializeMqttAsync()
@@ -74,6 +103,9 @@ namespace MetalMonitor.Core
 
         public async Task SetDataSourceAsync(string source)
         {
+            // 切换数据源前先冲刷剩余的缓冲数据，避免切换瞬间丢失
+            try { await FlushAsync(); } catch { }
+
             _selectedDataSource = source;
             _configService.DataSource = source;
             switch (source)
@@ -125,6 +157,8 @@ namespace MetalMonitor.Core
 
         public async Task ReloadMetricConfigsAsync()
         {
+            try { await FlushAsync(); } catch { }
+
             if (_databaseService != null)
             {
                 _metricConfigs = await _databaseService.GetAllMetricConfigsAsync();
@@ -157,22 +191,46 @@ namespace MetalMonitor.Core
 
         private void UpdateDeviceFromMqtt(MqttDeviceData deviceData)
         {
-            var device = _devices.FirstOrDefault(d => d.Name == deviceData.Name);
-            if (device != null)
+            Device? device;
+            lock (_devicesLock)
             {
-                device.SetMetricValue("Temperature", deviceData.Temperature);
-                device.Temperature = deviceData.Temperature;
+                device = _devices.FirstOrDefault(d => d.Name == deviceData.Name);
+            }
+            if (device == null || deviceData.Metrics == null)
+                return;
 
-                bool isAlarming = _alarmService.ShouldAlarm("Temperature", deviceData.Temperature);
-                device.SetMetricAlarmState("Temperature", isAlarming);
+            foreach (var kvp in deviceData.Metrics)
+            {
+                string metricName = kvp.Key;
+                double value = kvp.Value;
 
-                _alarmService.CheckAndNotify(device.Name, "Temperature", deviceData.Temperature);
+                // 与模拟数据路径保持一致：先更新报警状态再写值，避免 UI 读到滞后报警状态
+                bool isAlarming = _alarmService.ShouldAlarm(metricName, value);
+                device.SetMetricAlarmState(metricName, isAlarming);
+
+                device.SetMetricValue(metricName, value);
+                if (metricName == "Temperature")
+                    device.Temperature = value;
+
+                _alarmService.CheckAndNotify(device.Name, metricName, value);
+
+                if (_databaseService != null)
+                {
+                    EnqueueDataRecord(new DataRecord
+                    {
+                        DeviceId = device.Id,
+                        DeviceName = device.Name,
+                        MetricName = metricName,
+                        Value = value,
+                        Unit = GetMetricUnit(metricName),
+                        Timestamp = DateTime.Now
+                    });
+                }
             }
         }
 
-        private async Task UpdateDeviceDataAsync()
+        private void UpdateDeviceData()
         {
-            var batch = new List<DataRecord>();
             // 快照配置，避免与 UI 线程重载配置竞争
             var metrics = _metricConfigs;
             // 快照设备列表，避免与 ReloadDevices 并发修改导致枚举异常
@@ -209,24 +267,16 @@ namespace MetalMonitor.Core
                         device.Temperature = value;
                     }
 
-                    if (_databaseService != null)
+                    EnqueueDataRecord(new DataRecord
                     {
-                        batch.Add(new DataRecord
-                        {
-                            DeviceId = device.Id,
-                            DeviceName = device.Name,
-                            MetricName = metric.Name,
-                            Value = value,
-                            Unit = metric.Unit,
-                            Timestamp = DateTime.Now
-                        });
-                    }
+                        DeviceId = device.Id,
+                        DeviceName = device.Name,
+                        MetricName = metric.Name,
+                        Value = value,
+                        Unit = metric.Unit,
+                        Timestamp = DateTime.Now
+                    });
                 }
-            }
-            if (_databaseService != null && batch.Count > 0)
-            {
-                // 批量插入，减少连接开销和锁冲突
-                await _databaseService.AddDataRecordsBatchAsync(batch);
             }
         }
 
@@ -261,6 +311,8 @@ namespace MetalMonitor.Core
 
         public async Task UpdateDevicesAsync()
         {
+            if (_disposed) return;
+
             // 首次加载设备列表和指标配置
             if (!_devicesLoaded && _databaseService != null)
             {
@@ -274,8 +326,14 @@ namespace MetalMonitor.Core
 
             if (!_useMqtt || !_mqttService?.IsConnected == true)
             {
-                await UpdateDeviceDataAsync();
+                UpdateDeviceData();
             }
+
+            // 达到批量阈值自动落盘；MQTT 路径产生的缓冲数据也在此统一冲刷
+            await FlushIfNeededAsync();
+
+            // 周期性回收 WAL 文件空间
+            await CheckpointIfNeededAsync();
         }
 
         // 增量同步设备列表：保留 Id 相同的旧对象（卡片 ViewModel 仍持有引用可继续收事件），
@@ -334,14 +392,104 @@ namespace MetalMonitor.Core
 
         public async Task ReloadDevicesAsync()
         {
+            try { await FlushAsync(); } catch { }
             await SyncDevicesFromDatabaseAsync();
         }
+
+        // ===== 批量写入缓冲与 WAL 回收 =====
+
+        private void EnqueueDataRecord(DataRecord record)
+        {
+            if (_disposed) return;
+            lock (_batchLock)
+                _pendingBatch.Add(record);
+        }
+
+        private async Task FlushIfNeededAsync()
+        {
+            if (_databaseService == null || _disposed) return;
+
+            List<DataRecord>? toFlush = null;
+            lock (_batchLock)
+            {
+                if (_pendingBatch.Count >= _batchSize)
+                {
+                    toFlush = new List<DataRecord>(_pendingBatch);
+                    _pendingBatch.Clear();
+                }
+            }
+            if (toFlush != null)
+                await WriteBatchAsync(toFlush);
+        }
+
+        public async Task FlushAsync()
+        {
+            if (_databaseService == null || _disposed) return;
+
+            List<DataRecord>? toFlush = null;
+            lock (_batchLock)
+            {
+                if (_pendingBatch.Count > 0)
+                {
+                    toFlush = new List<DataRecord>(_pendingBatch);
+                    _pendingBatch.Clear();
+                }
+            }
+            if (toFlush != null)
+                await WriteBatchAsync(toFlush);
+        }
+
+        private async Task WriteBatchAsync(List<DataRecord> records)
+        {
+            var db = _databaseService!;
+            await _flushLock.WaitAsync();
+            try
+            {
+                await db.AddDataRecordsBatchAsync(records);
+            }
+            finally
+            {
+                _flushLock.Release();
+            }
+        }
+
+        private string GetMetricUnit(string metricName)
+            => _metricConfigs.FirstOrDefault(c => c.Name == metricName)?.Unit ?? string.Empty;
+
+        private async Task CheckpointIfNeededAsync()
+        {
+            if (_databaseService == null || _disposed) return;
+            if (DateTime.UtcNow - _lastCheckpointUtc < CheckpointInterval) return;
+
+            try
+            {
+                await _databaseService.CheckpointAsync();
+            }
+            catch
+            {
+                // WAL 检查点失败不应阻断数据采集
+            }
+            finally
+            {
+                _lastCheckpointUtc = DateTime.UtcNow;
+            }
+        }
+
+        #region IDisposable
+        public void Dispose()
+        {
+            if (_disposed) return;
+            // 退出时立即落盘剩余缓冲数据
+            try { FlushAsync().GetAwaiter().GetResult(); } catch { }
+            _disposed = true;
+        }
+        #endregion
 
         private class MqttDeviceData
         {
             public string Id { get; set; } = string.Empty;
             public string Name { get; set; } = string.Empty;
-            public double Temperature { get; set; }
+            public Dictionary<string, double> Metrics { get; set; } = new();
         }
     }
 }

@@ -28,11 +28,30 @@ namespace MetalMonitor.Core
             }
         }
 
+        // 显式指定数据库文件完整路径（便于单元测试隔离与自定义部署）
+        public DatabaseService(string databasePath)
+        {
+            _configService = new ConfigService();
+            _databasePath = databasePath;
+            string? dir = Path.GetDirectoryName(databasePath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+        }
+
         public async Task ChangeDatabasePathAsync(string newPath)
         {
             _databasePath = Path.Combine(newPath, "metalmonitor.db");
             _configService.DatabasePath = newPath;
             await InitializeAsync();
+        }
+
+        // 周期回收 WAL 文件空间（与写事务错峰执行，异常由调用方兜底）
+        public async Task CheckpointAsync()
+        {
+            using var connection = new SqliteConnection($"Data Source={_databasePath}");
+            await connection.OpenAsync();
+            using var command = new SqliteCommand("PRAGMA wal_checkpoint(TRUNCATE);", connection);
+            await command.ExecuteNonQueryAsync();
         }
 
         public async Task InitializeAsync()

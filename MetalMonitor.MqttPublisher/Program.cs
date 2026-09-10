@@ -11,9 +11,9 @@ namespace MetalMonitor.MqttPublisher
         {
             var devices = new List<DeviceData>
             {
-                new DeviceData { Id = "device-001", Name = "1号冲压机", Temperature = 65 },
-                new DeviceData { Id = "device-002", Name = "2号CNC", Temperature = 60 },
-                new DeviceData { Id = "device-003", Name = "3号磨床", Temperature = 70 }
+                new DeviceData { Id = "device-001", Name = "1号冲压机" },
+                new DeviceData { Id = "device-002", Name = "2号CNC" },
+                new DeviceData { Id = "device-003", Name = "3号磨床" }
             };
 
             var factory = new MqttFactory();
@@ -59,8 +59,8 @@ namespace MetalMonitor.MqttPublisher
             {
                 foreach (var device in devices)
                 {
-                    device.Temperature = Math.Round(55 + random.NextDouble() * 35, 1);
-                    
+                    device.Metrics = GenerateMetrics(random);
+
                     var payload = JsonSerializer.Serialize(device);
                     var topic = $"metalmonitor/devices/{device.Id}/data";
 
@@ -85,11 +85,25 @@ namespace MetalMonitor.MqttPublisher
             await mqttClient.DisconnectAsync();
         }
 
+        // 生成与系统默认指标配置匹配的模拟值（6 类指标，范围覆盖报警阈值）
+        private static Dictionary<string, double> GenerateMetrics(Random random)
+        {
+            return new Dictionary<string, double>
+            {
+                ["Temperature"] = Math.Round(55 + random.NextDouble() * 40, 1),    // 55~95（阈值 85，偶发报警）
+                ["Voltage"] = Math.Round(340 + random.NextDouble() * 80, 1),       // 340~420（阈值 380）
+                ["ProductionCount"] = Math.Round(random.NextDouble() * 5000, 1),
+                ["Humidity"] = Math.Round(30 + random.NextDouble() * 70, 1),       // 30~100（阈值 90）
+                ["Pressure"] = Math.Round(5 + random.NextDouble() * 12, 1),        // 5~17（阈值 10）
+                ["Speed"] = Math.Round(2000 + random.NextDouble() * 2500, 1)       // 2000~4500（阈值 3000）
+            };
+        }
+
         class DeviceData
         {
             public string Id { get; set; } = string.Empty;
             public string Name { get; set; } = string.Empty;
-            public double Temperature { get; set; }
+            public Dictionary<string, double> Metrics { get; set; } = new();
         }
     }
 }

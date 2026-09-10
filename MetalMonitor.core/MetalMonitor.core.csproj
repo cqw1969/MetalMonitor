@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -12,6 +12,11 @@
     <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
     <PackageReference Include="MQTTnet.Extensions.ManagedClient" Version="4.3.7.1207" />
     <PackageReference Include="System.Text.Json" Version="10.0.9" />
+  </ItemGroup>
+
+  <!-- 允许单元测试工程访问 internal 成员（测试专用构造函数） -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="MetalMonitor.Tests" />
   </ItemGroup>
 
 </Project>

@@ -29,6 +29,22 @@
 - **成因**: `DeviceService` 对 `_devices` 集合执行 `Clear()` 后重建，与定时器线程的 `foreach` 遍历并发，触发 `InvalidOperationException` 并终止进程
 - **解决方法**: 引入 `_devicesLock` 锁对象保护 `_devices` 列表；遍历前获取快照（`lock` 内 `ToList()`）；改为增量同步机制（按 Id 保留/移除/追加），避免 `Clear()` + 重建
 
+### 3b. 【关联 #1】DI 容器多构造函数歧义导致启动卡死（无窗口、调试不终止）
+
+- **时间**: 2026-09-05 16:45:15（发现并修复于同日）
+- **文件**: `MetalMonitor.core/Services/DeviceService.cs` — 构造函数区（当前版本约第 36-78 行）；异常抛出点 `MetalMonitor.UI/App.xaml.cs` — `OnStartup`（第 71 行 `GetRequiredService<IDeviceService>()`）
+- **现象**: 程序启动后不显示主窗口、任务管理器中进程存活、VS 调试不中断也不报错，表现为"卡死"。`logs/app_2026-09-05_16-45-15.log` 记录到 `System.InvalidOperationException: Unable to activate type 'MetalMonitor.Core.DeviceService'. The following constructors are ambiguous: .ctor(IAlarmService, IMqttService, IDatabaseService) 与 .ctor(IAlarmService, ConfigService)`
+- **根本原因**: 为支持单元测试，给 `DeviceService` 新增了带 `ConfigService` 参数的 public 构造函数，其中一个还写成可选参数（`ConfigService? configService = null`）。.NET DI 容器解析服务时按"参数最多且全部可解析"选择构造函数，而**带默认值的可选参数也会被容器判定为"可满足"**，导致两个构造函数同时命中、容器无法决断而抛歧义异常。异常发生在 `async void OnStartup` 中，被 `DispatcherUnhandledException` 捕获后置 `e.Handled = true`：异常被吞掉、进程继续存活，但 `mainWindow.Show()` 永远不会执行——于是"无界面、无崩溃、无调试中断"。
+- **解决方法**:
+  1. public 构造函数集合恢复为 DI 可唯一决断的形态（最长构造函数唯一：`(IAlarmService, IMqttService, IDatabaseService)`），**public 构造函数不使用可选参数**；
+  2. 仅供单元测试的构造函数改为 `internal`（DI 容器只反射 public 构造函数，天然不可见），并在 `MetalMonitor.core.csproj` 添加 `<InternalsVisibleTo Include="MetalMonitor.Tests" />` 对测试工程开放；
+  3. 公共初始化逻辑抽取为 `InitializeBatchSettings()` 避免构造函数重复代码。
+- **教训/最佳实践**:
+  - DI 容器解析的类型，public 构造函数必须保持"唯一最长可解析"；测试专用重载一律 `internal` + `InternalsVisibleTo`，这是 .NET 项目的标准做法；
+  - `async void` 仅限事件处理器，且其中的异常会进入全局异常处理器——全局处理器 `e.Handled = true` 会让启动期失败"静默存活"，排障时第一时间看 `logs/` 滚动日志；
+  - 本次能快速定位，正是因为 #17 引入的全局异常落盘机制生效。
+- **最后校验版本**: 2026-09-05 修复后，48 项单元测试全部通过，实际启动验证主窗口正常显示。
+
 ---
 
 ## 二、数据采集与存储问题
@@ -204,3 +220,44 @@
 | 16 | 应用需订阅全局异常事件，防止未处理异常直接闪退 | #17 |
 | 17 | async void 事件处理器中的异常无法被捕获，需加 try-catch | #18 |
 | 18 | 非模态窗口关闭时需显式激活 Owner，否则焦点可能跳到其他应用 | #19 |
+| 19 | DI 容器解析的类型，public 构造函数须"唯一最长可解析"，测试重载用 internal + InternalsVisibleTo；可选参数也会被 DI 视为可满足而引发歧义 | #3b（关联 #1） |
+## [2026-09-05 16:56:32] SqliteException (UI线程未处理异常)
+- 消息: SQLite Error 10: 'disk I/O error'.
+- 堆栈跟踪:
+```
+   at Microsoft.Data.Sqlite.SqliteException.ThrowExceptionForRC(Int32 rc, sqlite3 db)
+   at Microsoft.Data.Sqlite.SqliteCommand.PrepareAndEnumerateStatements()+MoveNext()
+   at Microsoft.Data.Sqlite.SqliteCommand.GetStatements()+MoveNext()
+   at Microsoft.Data.Sqlite.SqliteDataReader.NextResult()
+   at Microsoft.Data.Sqlite.SqliteCommand.ExecuteReader(CommandBehavior behavior)
+   at Microsoft.Data.Sqlite.SqliteCommand.ExecuteReader()
+   at Microsoft.Data.Sqlite.SqliteCommand.ExecuteNonQuery()
+   at System.Data.Common.DbCommand.ExecuteNonQueryAsync(CancellationToken cancellationToken)
+--- End of stack trace from previous location ---
+   at MetalMonitor.Core.DatabaseService.InitializeAsync() in D:\code\MetalMonitor\MetalMonitor.core\Services\DatabaseService.cs:line 55
+   at MetalMonitor.UI.App.OnStartup(StartupEventArgs e) in D:\code\MetalMonitor\MetalMonitor.UI\App.xaml.cs:line 89
+   at System.Threading.Tasks.Task.<>c.<ThrowAsync>b__128_0(Object state)
+   at System.Windows.Threading.ExceptionWrapper.InternalRealCall(Delegate callback, Object args, Int32 numArgs)
+   at System.Windows.Threading.ExceptionWrapper.TryCatchWhen(Object source, Delegate callback, Object args, Int32 numArgs, Delegate catchHandler)
+```
+
+> 【2026-09-05 人工分析 · 关联 #3b、#4】本条为旧版本全局处理器自动写入。`SQLITE_IOERR (Error 10)` 发生在 `InitializeAsync` 设置 WAL 模式阶段，时间点紧随 #3b 两次卡死进程（16:44/16:45，持有数据库句柄被强制结束）之后，判定为异常进程残留的文件句柄/-shm 共享内存导致的**瞬时文件系统错误**，而非代码缺陷：卡死进程被强杀后短时间内文件锁未释放，新进程执行需要独占锁的 `PRAGMA journal_mode=WAL` 失败。修复 #3b 后重新实测启动，数据库正常打开、主窗口正常显示，未再复现。SQLite 自身在下次打开时会对 WAL/-shm 做热恢复。若今后在可移动/网络驱动器上反复出现 Error 10，应提示用户检查数据库存储路径所在磁盘是否可用。
+
+### 20. 修改设备后 NullReferenceException（#15 同模式复发）
+
+- **时间**: 2026-09-09 01:05
+- **文件**: `MetalMonitor.UI/ViewModels/DeviceManagementViewModel.cs`
+- **函数**: `UpdateDeviceAsync`（崩溃点原第 138 行：`StatusMessage = $"设备 [{SelectedDevice.Name}] 修改成功";`）
+- **异常类型**: `System.NullReferenceException`（HResult=0x80004003），Source=MetalMonitor.UI
+- **现象**: 在设备管理界面选中已有设备并点"修改"后，程序中断退到 VS 调试界面
+- **成因**: 与 #15 完全相同的 WPF 绑定副作用模式。`UpdateDeviceAsync` 在第 135 行 `await LoadDevicesAsync()`，而 `LoadDevicesAsync` 内部执行 `Devices.Clear()`（第 89 行）；集合清空时 DataGrid 的 `SelectedItem` 被置空，双向绑定随即把 `SelectedDevice` 写为 `null`；方法继续执行到原第 138 行访问 `SelectedDevice.Name` 即抛空引用。`AddDeviceAsync`/`DeleteDeviceAsync` 未崩溃是因为二者分别用局部变量 `device.Name` 和提前捕获的 `deviceName` 构造状态消息，唯独 `UpdateDeviceAsync` 在 reload 之后直接使用了 `SelectedDevice`
+- **解决方法**:
+  1. 在 reload 之前用局部变量捕获设备引用（`deviceToUpdate`）与名称（`updatedName`），后续数据库调用与状态消息均使用局部变量；
+  2. reload 完成后按 `Id` 用 `Devices.FirstOrDefault` 找回重建集合中的新对象并重新赋值给 `SelectedDevice`，保持 DataGrid 选中态与编辑表单显示；
+  3. 补充 `using System.Linq;`。
+- **教训/最佳实践**:
+  - 教训表第 13 条（#15）再次验证：**任何"先 reload 集合、后用 SelectedXxx"的代码都必须在 reload 前用局部变量捕获**；同类 ViewModel（设备管理、指标设置）应统一此模式；
+  - `LoadDevicesAsync`/`LoadMetricConfigsAsync` 这类 `Clear()`+重建的方法会使绑定的选中项失效，reload 后如需保持选中态，应按 Id 重新选中。
+- **最后校验**: 2026-09-09 修复后 `dotnet build` 通过（0 错误）。
+
+

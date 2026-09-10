@@ -102,6 +102,9 @@ namespace MetalMonitor.UI.ViewModels
         // 指标是否启用（停用后卡片置灰）
         public bool IsMetricActive => CurrentConfig?.IsActive ?? false;
 
+        // 设备是否处于暂停/停止状态（IsActive=false），暂停时卡片整体灰化并显示"暂停中"
+        public bool IsPaused => !Device.IsActive;
+
         // 当前指标是否处于报警状态
         public bool IsMetricAlarming => Device.IsMetricAlarming(_metricName);
 
@@ -237,6 +240,11 @@ namespace MetalMonitor.UI.ViewModels
             if (e.PropertyName == nameof(Device.IsAlarming))
             {
                 Application.Current?.Dispatcher.BeginInvoke(() => OnPropertyChanged(nameof(IsMetricAlarming)));
+            }
+            else if (e.PropertyName == nameof(Device.IsActive))
+            {
+                // 设备启用/停止状态变化：通知遮罩层显示或隐藏
+                Application.Current?.Dispatcher.BeginInvoke(() => OnPropertyChanged(nameof(IsPaused)));
             }
         }
 

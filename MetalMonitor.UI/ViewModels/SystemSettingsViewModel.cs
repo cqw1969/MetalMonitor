@@ -38,6 +38,19 @@ namespace MetalMonitor.UI.ViewModels
                     EditMaxValue = value.MaxValue;
                     EditIsActive = value.IsActive;
                 }
+                else
+                {
+                    // 取消选中（点击列表空白区域）：编辑栏恢复为未选中的空白状态
+                    EditName = string.Empty;
+                    EditDisplayName = string.Empty;
+                    EditUnit = string.Empty;
+                    EditAlarmThreshold = 0;
+                    EditAlarmEnabled = true;
+                    EditAlarmDirection = AlarmDirection.Above;
+                    EditMinValue = 0;
+                    EditMaxValue = 100;
+                    EditIsActive = true;
+                }
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(HasSelectedConfig));
             }

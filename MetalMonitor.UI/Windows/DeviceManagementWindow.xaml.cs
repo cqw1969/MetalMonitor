@@ -2,6 +2,9 @@ using MetalMonitor.Core;
 using MetalMonitor.UI.ViewModels;
 using System;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 
 namespace MetalMonitor.UI.Windows
 {
@@ -53,6 +56,33 @@ namespace MetalMonitor.UI.Windows
                     MessageBox.Show($"删除设备失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
                 }
             }
+        }
+
+        // 点击 DataGrid 空白区域（行与滚动条之外）时取消选中，
+        // 取消后 SelectedDevice 变为 null，修改/删除按钮随之禁用、编辑栏清空
+        private void OnDataGridPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is not DataGrid grid) return;
+            if (e.OriginalSource is not DependencyObject source) return;
+
+            // 命中点向上找不到行、也不在滚动条上 → 视为点击空白区域
+            if (FindParent<DataGridRow>(source) == null
+                && FindParent<System.Windows.Controls.Primitives.ScrollBar>(source) == null)
+            {
+                grid.UnselectAll();
+            }
+        }
+
+        // 在可视化树中向上查找指定类型的父元素
+        private static T? FindParent<T>(DependencyObject child) where T : DependencyObject
+        {
+            DependencyObject? current = child;
+            while (current != null)
+            {
+                if (current is T matched) return matched;
+                current = VisualTreeHelper.GetParent(current);
+            }
+            return null;
         }
 
         protected override void OnClosed(EventArgs e)

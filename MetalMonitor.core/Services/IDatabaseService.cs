@@ -8,6 +8,7 @@ namespace MetalMonitor.Core
         string DatabasePath { get; }
         Task InitializeAsync();
         Task ChangeDatabasePathAsync(string newPath);
+        Task CheckpointAsync();
 
         // 数据记录
         Task AddDataRecordAsync(string deviceId, string deviceName, string metricName, double value, string? unit = null);

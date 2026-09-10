@@ -97,7 +97,8 @@
                       BorderThickness="0"
                       SelectionMode="Single"
                       Foreground="#FFE0E0E0"
-                      ColumnHeaderHeight="36">
+                      ColumnHeaderHeight="36"
+                      PreviewMouseLeftButtonDown="OnDataGridPreviewMouseLeftButtonDown">
                 <DataGrid.ColumnHeaderStyle>
                     <Style TargetType="DataGridColumnHeader">
                         <Setter Property="Background" Value="#FF2D2D3F"/>

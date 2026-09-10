@@ -93,5 +93,19 @@
                 </Grid>
             </StackPanel>
         </Border>
+
+        <!-- 设备暂停遮罩：IsPaused=true 时覆盖整个卡片，整体灰化并显示"暂停中"标识；
+             IsHitTestVisible=False 使鼠标点击穿透，暂停状态下仍可点开详情窗口 -->
+        <Border CornerRadius="8"
+                Background="#CC1C1C28"
+                IsHitTestVisible="False"
+                Visibility="{Binding IsPaused, Converter={x:Static vm:BooleanToVisibilityConverter.Instance}}">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="‖" FontSize="32" FontWeight="Bold"
+                           Foreground="#FFB8B8C8" HorizontalAlignment="Center"/>
+                <TextBlock Text="暂停中" FontSize="15" FontWeight="SemiBold"
+                           Foreground="#FFD5D5E0" HorizontalAlignment="Center" Margin="0,6,0,0"/>
+            </StackPanel>
+        </Border>
     </Grid>
 </UserControl>

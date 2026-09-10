@@ -1,6 +1,7 @@
 using MetalMonitor.Core;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 
@@ -28,9 +29,22 @@ namespace MetalMonitor.UI.ViewModels
                     EditDescription = value.Description;
                     EditIsActive = value.IsActive;
                 }
+                else
+                {
+                    // 取消选中（点击列表空白区域）：编辑栏恢复为未选中的空白状态
+                    EditName = string.Empty;
+                    EditDeviceType = string.Empty;
+                    EditLocation = string.Empty;
+                    EditDescription = string.Empty;
+                    EditIsActive = true;
+                }
                 OnPropertyChanged();
+                OnPropertyChanged(nameof(HasSelectedDevice));
             }
         }
+
+        // 是否已选中设备（控制修改/删除按钮可用性）
+        public bool HasSelectedDevice => _selectedDevice != null;
 
         // 编辑表单字段
         private string _editName = string.Empty;
@@ -125,17 +139,30 @@ namespace MetalMonitor.UI.ViewModels
                 return;
             }
 
-            SelectedDevice.Name = EditName;
-            SelectedDevice.DeviceType = EditDeviceType;
-            SelectedDevice.Location = EditLocation;
-            SelectedDevice.Description = EditDescription;
-            SelectedDevice.IsActive = EditIsActive;
+            // 提前捕获引用与名称：后续 LoadDevicesAsync 会 Clear() 集合，
+            // DataGrid 的 SelectedItem 会随之被置空，导致 SelectedDevice 变为 null
+            var deviceToUpdate = SelectedDevice;
+            var updatedName = EditName;
 
-            await _databaseService.UpdateDeviceAsync(SelectedDevice);
+            deviceToUpdate.Name = EditName;
+            deviceToUpdate.DeviceType = EditDeviceType;
+            deviceToUpdate.Location = EditLocation;
+            deviceToUpdate.Description = EditDescription;
+            deviceToUpdate.IsActive = EditIsActive;
+
+            await _databaseService.UpdateDeviceAsync(deviceToUpdate);
             await LoadDevicesAsync();
             // 同步主界面设备列表，使设备属性变更立即生效
             await _deviceService.ReloadDevicesAsync();
-            StatusMessage = $"设备 [{SelectedDevice.Name}] 修改成功";
+
+            // LoadDevicesAsync 重建了集合（元素是新对象），按 Id 重新选中刚修改的设备，保持选中态与编辑表单
+            var refreshed = Devices.FirstOrDefault(d => d.Id == deviceToUpdate.Id);
+            if (refreshed != null)
+            {
+                SelectedDevice = refreshed;
+            }
+
+            StatusMessage = $"设备 [{updatedName}] 修改成功";
         }
 
         public async Task DeleteDeviceAsync()
