@@ -365,3 +365,26 @@ FodyWeavers.xsd
 *.docx
 *.png
 *.svg
+
+# ===== 项目图片资源例外（上面的全局 *.png/*.svg 会误伤文档配图） =====
+!assets/**/*.png
+!assets/**/*.svg
+!docs/**/*.png
+!docs/**/*.svg
+
+# ===== Keil MDK / STM32 固件（firmware/） =====
+# 构建输出目录（.hex/.bin/.o/.map 等产物都在里面，随目录整体忽略）
+**/Objects/
+**/Listings/
+**/DebugConfig/
+**/RTE/_*/
+# 用户相关工程配置（.uvprojx 工程本体必须保留入库，不要忽略）
+*.uvguix.*
+*.uvguid.*
+*.uvoptx
+# 临时/备份/调试器文件
+*.scvd
+*.bak
+*.dep
+JLinkLog.txt
+JLinkSettings.ini
