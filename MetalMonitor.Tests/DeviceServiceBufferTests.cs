@@ -1,3 +1,4 @@
+using MetalMonitor.core.Services;
 using MetalMonitor.Core;
 using Moq;
 using System.IO;
@@ -196,10 +197,11 @@ namespace MetalMonitor.Tests
             _db.Setup(x => x.GetAllMetricConfigsAsync()).ReturnsAsync(DefaultMetrics());
 
             var mqtt = new Mock<IMqttService>();
-            mqtt.SetupGet(x => x.IsConnected).Returns(false);
+            mqtt.SetupGet(x => x.IsConnected).Returns(true); // 已连接：切源不真正发起连接，仅启用 MQTT 通路
 
             var svc = new DeviceService(_alarm, mqtt.Object, _db.Object);
             await svc.ReloadDevicesAsync(); // 先加载设备列表
+            await svc.SetDataSourceAsync("MQTT"); // 启用 MQTT：心跳不再生成模拟数据
 
             // 模拟发布端推送一条含两个指标的消息
             var payload = JsonSerializer.Serialize(new
@@ -215,6 +217,8 @@ namespace MetalMonitor.Tests
             mqtt.Raise(x => x.MessageReceived += null,
                 new MqttMessageReceivedEventArgs("metalmonitor/devices/device-001/data", payload));
 
+            // 改造后接入层只写暂存区与落库缓冲：设备值在心跳排空暂存区时统一回写
+            await svc.UpdateDevicesAsync();
             await svc.FlushAsync();
 
             Assert.Single(_batches);
@@ -252,6 +256,43 @@ namespace MetalMonitor.Tests
             await svc.FlushAsync();
 
             Assert.Empty(_batches);
+        }
+
+        [Fact]
+        public async Task DeviceRenamed_AfterReload_StillRoutedByNewName()
+        {
+            _db.Setup(x => x.GetAllDevicesAsync())
+               .ReturnsAsync(Devices(new Device("1号冲压机") { Id = "d1" }));
+            _db.Setup(x => x.GetAllMetricConfigsAsync()).ReturnsAsync(DefaultMetrics());
+
+            var mqtt = new Mock<IMqttService>();
+            mqtt.SetupGet(x => x.IsConnected).Returns(true);
+
+            var svc = new DeviceService(_alarm, mqtt.Object, _db.Object);
+            await svc.ReloadDevicesAsync();
+            await svc.SetDataSourceAsync("MQTT");
+
+            // 数据库侧把同一台设备改名（Id 不变），再触发一次增量同步——
+            // 同步会原地改写 device.Name（保留对象引用），因此按名索引必须在此重建
+            _db.Setup(x => x.GetAllDevicesAsync())
+               .ReturnsAsync(Devices(new Device("2号冲压机") { Id = "d1" }));
+            await svc.ReloadDevicesAsync();
+
+            // D3 回归点：索引若未重建，改名后的消息会落进"设备不存在"分支而静默丢弃
+            var payload = JsonSerializer.Serialize(new
+            {
+                Id = "device-001",
+                Name = "2号冲压机",
+                Metrics = new System.Collections.Generic.Dictionary<string, double> { ["Temperature"] = 61.5 }
+            });
+            mqtt.Raise(x => x.MessageReceived += null,
+                new MqttMessageReceivedEventArgs("metalmonitor/devices/device-001/data", payload));
+
+            await svc.UpdateDevicesAsync();
+            await svc.FlushAsync();
+
+            Assert.Equal(61.5, svc.GetDevices().Single().GetMetricValue("Temperature"));
+            Assert.Contains(_batches, b => b.Any(r => r.MetricName == "Temperature" && r.Value == 61.5));
         }
     }
 }

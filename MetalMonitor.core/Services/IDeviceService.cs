@@ -1,17 +1,59 @@
 namespace MetalMonitor.Core
 {
+    /// <summary>
+    /// 设备业务门面契约：UI 层访问设备/指标/数据源的统一入口。
+    /// 依赖接口而非具体类，UI 不必知道 DeviceService 内部结构，测试也可注入替身。
+    /// </summary>
     public interface IDeviceService
     {
-        List<Device> GetDevices();
-        Task UpdateDevicesAsync();
-        bool ShouldAlarm(string metricName, double value);
-        double GetAlarmThreshold(string metricName);
+        /// <summary>历史曲线保留的最大数据点数（超出滚动丢弃旧点）</summary>
         int MaxHistoryPoints { get; }
+
+        /// <summary>当前数据源显示名（模拟数据/MQTT/串口）</summary>
         string DataSource { get; }
+
+        /// <summary>可供 UI 下拉选择的全部数据源名称</summary>
         string[] AvailableDataSources { get; }
+
+        /// <summary>获取全部设备的快照列表（线程安全拷贝）</summary>
+        /// <returns>设备列表副本；调用方可自由遍历，不受后续集合增删影响</returns>
+        List<Device> GetDevices();
+
+        /// <summary>
+        /// 心跳推进：同步设备/配置（仅首次）、按当前数据源产生数据、达阈值批量落库、周期回收 WAL。
+        /// </summary>
+        /// <remarks>由 UI 定时器按配置间隔调用；MQTT/串口数据由事件驱动，不经此方法</remarks>
+        Task UpdateDevicesAsync();
+
+        /// <summary>
+        /// 判断指标当前值是否应报警（无状态只读判定）。
+        /// </summary>
+        /// <param name="metricName">指标名</param>
+        /// <param name="value">待判定的当前值</param>
+        /// <returns>true=越限应报警；false=正常或该指标未启用报警</returns>
+        bool ShouldAlarm(string metricName, double value);
+
+        /// <summary>
+        /// 获取指标的报警阈值。
+        /// </summary>
+        /// <param name="metricName">指标名</param>
+        /// <returns>阈值；指标不存在时返回实现约定的默认值</returns>
+        double GetAlarmThreshold(string metricName);
+
+        /// <summary>
+        /// 切换数据源；切换前强制冲刷缓冲，连接失败时回退模拟数据。
+        /// </summary>
+        /// <param name="source">数据源名（须为 <see cref="AvailableDataSources"/> 之一）</param>
         Task SetDataSourceAsync(string source);
+
+        /// <summary>强制重新从数据库同步设备列表（增删改设备后调用）</summary>
         Task ReloadDevicesAsync();
+
+        /// <summary>重新加载指标配置并同步报警阈值（修改指标配置后调用）</summary>
         Task ReloadMetricConfigsAsync();
+
+        /// <summary>获取当前生效的指标配置集合</summary>
+        /// <returns>指标配置列表；未加载时为空列表</returns>
         List<MetricConfig> GetMetricConfigs();
     }
 }

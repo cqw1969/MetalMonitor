@@ -1,49 +1,144 @@
+using MetalMonitor.Core;
 using System.Text.Json;
 using System.Threading;
+// 别名规避命名冲突：本类有同名属性 DataSource（string，对外 API），
+// 类内直接写 DataSourceKind.Simulation 会被解析成"属性.Simulation"（成员查找优先于类型查找），
+// 故枚举在类内一律写作 DataSourceKind
+using DataSourceKind = MetalMonitor.Core.DataSource;
 
-namespace MetalMonitor.Core
+namespace MetalMonitor.core.Services
 {
+    /// <summary>
+    /// 核心枢纽（架构定位）：数据管线中转站，UI 层只与本类对话（门面）。
+    /// 三条数据通路（T3.4 起改为"接入事件驱动 + 派发节拍驱动"）：
+    ///   接入段（各自线程）：解析/生成 → 写暂存区（同键 latest-wins）+ 追加落库缓冲（保真）
+    ///   派发段（心跳 1Hz）：排空暂存区 → 报警判断 → SetMetricValue 触发 UI 事件（见 ApplyPendingSamples）
+    ///   ①模拟数据 UpdateDeviceData（UI 线程，心跳驱动）
+    ///   ②MQTT OnMqttMessageReceived（MQTTnet 后台线程，消息驱动）
+    ///   ③串口（T3.4 接入，串口后台线程，帧驱动，见 SetDataSourceAsync 的 case DataSourceKind.Serial）
+    /// 三个线程来源都要摸 _devices/_pendingBatch/_pendingSamples，这是 _devicesLock/_batchLock/_stagingLock 存在的原因。
+    /// </summary>
     public class DeviceService : IDeviceService, IDisposable
     {
+        // ===== 内存状态：设备"活体"集合 =====
+        // 首次心跳时从数据库 Devices 表同步进来，之后与 UI 卡片共享同一批对象实例——
+        // 值更新靠对象上的事件广播推给 UI，而不是每次重新查库
+        /// <summary>设备"活体"集合：首次心跳时从数据库同步，之后与 UI 卡片共享同一批对象实例。</summary>
         private readonly List<Device> _devices;
+        // D3：按设备名索引，把 UpdateDeviceFromMqtt 的 O(n) 线性查找降为 O(1)。
+        // 与 _devices 同一把 _devicesLock 保护，且只在唯一的结构变更点
+        // SyncDevicesFromDatabaseAsync（增删与改名都在其锁内）整体重建，故不会失效
+        /// <summary>按设备名索引（与 <see cref="_devices"/> 同锁保护、同点重建），避免热路径线性扫集合。</summary>
+        private readonly Dictionary<string, Device> _devicesByName = new();
+        // 三条线程来源（UI 心跳 / MQTT 后台线程 / 未来串口线程）都会读写它，全靠这把锁串行化
+        /// <summary>保护 <see cref="_devices"/> 集合结构与遍历的同步锁（对象内部状态由 Device 自身保证线程安全）。</summary>
         private readonly object _devicesLock = new();
+
+        // ===== 协作服务（构造函数注入）=====
+        // 报警服务必有；MQTT 与数据库可为 null——null = 该能力缺失，对应构造函数的降级形态
+        /// <summary>报警判定服务（必有依赖），提供阈值判断与边沿通知。</summary>
         private readonly IAlarmService _alarmService;
+        /// <summary>MQTT 数据源服务；为 null 表示该能力缺失，仅能走模拟数据通路。</summary>
         private readonly IMqttService? _mqttService;
+        /// <summary>数据库落库服务；为 null 表示不落库，缓冲第三步静默失效。</summary>
         private readonly IDatabaseService? _databaseService;
+        /// <summary>串口数据源服务（原始字节来源）；为 null 表示该能力缺失，串口通路整体跳过。</summary>
+        private readonly ISerialService? _serialService;
+        /// <summary>协议帧解析器（原始字节 → SensorDataFrame）；为 null 表示串口能力缺失。</summary>
+        private readonly FrameParser? _frameParser;
+        /// <summary>NODE_ID 帧路由器：构造时以 ConfigService 的启动只读路由表快照建立，运行中不变。</summary>
+        private readonly FrameRouter? _frameRouter;
+
+        // ===== 接入层暂存区（latest-wins）=====
+        // 串口/MQTT 的后台线程收到样本后先写这里，心跳排空时统一执行"业务三步"，
+        // 避免后台线程以收报频率直接触碰 UI 绑定的 Device（值写入会触发 UI 事件）
+        /// <summary>线程安全暂存区：键为「设备对象 + 指标名」，同一键只保留最新值；由心跳排空后统一派发。</summary>
+        private readonly Dictionary<(Device Device, string Metric), double> _pendingSamples = new();
+        /// <summary>保护 <see cref="_pendingSamples"/> 的同步锁；接入层后台线程与心跳线程都会读写。</summary>
+        private readonly object _stagingLock = new();
+
+        // ===== 模拟数据通路专用 =====
+        /// <summary>模拟数据随机数发生器，用于生成平滑随机游走。</summary>
         private readonly Random _random = new();
+        /// <summary>模拟数据平滑缓存，键为"设备Id:指标名"，值为上一拍生成值。</summary>
         private readonly Dictionary<string, double> _lastSimValues = new(); // 模拟数据平滑用：上一值缓存
+
+        // ===== 配置与运行状态旗标 =====
+        // 注意：这是本类自己 new 的 ConfigService（非注入），与 DatabaseService 内部那份互为独立副本
+        /// <summary>本类自建的配置服务（非注入），读取批量大小与持久化数据源；与 DatabaseService 内的副本相互独立。</summary>
         private readonly ConfigService _configService;
-        private bool _useMqtt = false;
-        private bool _devicesLoaded = false;
-        private List<MetricConfig> _metricConfigs = new();
-        private string _selectedDataSource = "模拟数据";
+        /// <summary>当前是否走 MQTT 通路；切源或断线时翻转为 false 以回退模拟数据。</summary>
+        private bool _useMqtt = false;                      // 当前是否走 MQTT 通路（切源/断线时翻转）
+        /// <summary>当前是否走串口通路；串口连接成功后置位，切源/连接失败时翻转（串口启用期间不再生成模拟数据）。</summary>
+        private bool _useSerial = false;                    // 当前是否走串口通路（连接成功置位/失败或切源翻转）
+        /// <summary>设备列表是否已完成首次数据库同步的旗标。</summary>
+        private bool _devicesLoaded = false;                // 设备列表是否已完成首次同步
+        /// <summary>指标配置快照（整体替换式更新）：驱动模拟数据量程并作为报警阈值的来源。</summary>
+        private List<MetricConfig> _metricConfigs = new();  // 指标配置快照：驱动模拟量程与报警阈值
+        /// <summary>按指标名索引（D3：把 GetMetricUnit 的 O(n) 线性查找降为 O(1)），与 <see cref="_metricConfigs"/> 同批整体替换。</summary>
+        private Dictionary<string, MetricConfig> _metricConfigsByName = new();
+        /// <summary>当前数据源，跨启动持久化在 config.json（存显示名，经 TryToDataSource 双向映射）。</summary>
+        private DataSourceKind _selectedDataSource = DataSourceKind.Simulation; // 当前数据源；显示名映射见 DataSourceExtensions（单一事实源）
 
         // 批量写入缓冲：达到 BatchSize 条后自动落盘，退出/切换时立即 flush
-        private readonly List<DataRecord> _pendingBatch = new();
-        private readonly object _batchLock = new();
-        private readonly SemaphoreSlim _flushLock = new(1, 1);
-        private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(60);
-        private int _batchSize;
-        private DateTime _lastCheckpointUtc = DateTime.UtcNow;
-        private bool _disposed = false;
+        /// <summary>待落库记录缓冲队列，三条数据通路的第三步都汇入此处。</summary>
+        private readonly List<DataRecord> _pendingBatch = new();  // 缓冲队列：三步汇合点的第三步往这里塞
+        /// <summary>保护 <see cref="_pendingBatch"/> 的同步锁；锁内只做加入/取出+清空，写库在锁外。</summary>
+        private readonly object _batchLock = new();               // 保护 _pendingBatch（MQTT 线程与心跳线程都会写）
+        /// <summary>串行化 SQLite 批量写入的异步信号量（1,1），防止多批数据并发写冲突。</summary>
+        private readonly SemaphoreSlim _flushLock = new(1, 1);    // 异步写库互斥：防止两批数据同时写 SQLite
+        /// <summary>WAL 检查点的固定周期：60 秒。</summary>
+        private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(60); // WAL 回收周期
+        /// <summary>自动落库触发条数，来自 config.json；非正值时回退默认 50。</summary>
+        private int _batchSize;                                   // 自动落库触发条数（来自 config.json，默认 50）
+        /// <summary>上次执行 WAL 检查点的 UTC 时间。</summary>
+        private DateTime _lastCheckpointUtc = DateTime.UtcNow;    // 上次 WAL 检查点时间
+        /// <summary>对象释放标记：置位后各数据通路与冲刷路径静默短路。</summary>
+        private bool _disposed = false;                           // 释放标记：Dispose 后各路径静默短路
 
+        /// <summary>每指标在内存中保留的最大历史点数（60）。</summary>
         public int MaxHistoryPoints { get; } = 60;
 
-        public string DataSource => _selectedDataSource;
+        /// <summary>未知节点计数：NODE_ID 不在路由表中（含 0xFF 保留值）而被丢弃的帧累计数。</summary>
+        public int UnknownNodeCount { get; private set; }
 
-        public string[] AvailableDataSources { get; } = new[] { "模拟数据", "MQTT", "串口" };
+        /// <summary>未匹配设备计数：路由表指向的设备名在当前设备列表中不存在而被丢弃的帧累计数。</summary>
+        public int UnroutedDeviceCount { get; private set; }
 
+        /// <summary>获取当前数据源显示名（枚举经 ToDisplay 映射，UI 与 config.json 均消费显示名）。</summary>
+        public string DataSource => _selectedDataSource.ToDisplay();
+
+        /// <summary>UI 数据源下拉框的可选项：由枚举自动生成（新增数据源只需扩枚举与映射表）。</summary>
+        public string[] AvailableDataSources { get; } =
+            Enum.GetValues<DataSourceKind>().Select(s => s.ToDisplay()).ToArray(); // UI 下拉框选项来源；"串口" 由 T3.4 激活
+
+        // ===== 构造函数族：能力按参数递增，DI 选"参数最多且依赖可满足"的那一个 =====
+        // App.xaml.cs 已注册 IAlarmService/IMqttService/IDatabaseService 三者，
+        // 运行时实际走 4 参数全功能版；其余重载是依赖缺失时的降级形态，
+        // 也是单元测试手动拼装替身组合的入口。所有重载经 : this(...) 链到最小版完成公共初始化。
         // 注意：public 构造函数集合必须保证 DI 容器能选出唯一"参数最多且可解析"的构造函数，
         // 不要给 public 构造函数加可选参数——可选参数会被 DI 视为可满足，引发构造函数歧义异常。
         // 仅供单元测试使用的构造函数一律声明为 internal（对 DI 不可见）。
+        // 最小形态：只有报警服务——模拟数据通路总可用，MQTT/落库是可选增强
+        /// <summary>
+        /// 最小能力形态：仅注入报警服务，模拟数据通路可用，无 MQTT、不落库。
+        /// </summary>
+        /// <param name="alarmService">报警判定与边沿通知服务。</param>
         public DeviceService(IAlarmService alarmService)
         {
             _alarmService = alarmService;
             _devices = new List<Device>();
-            _configService = new ConfigService();
+            _configService = new ConfigService();   // 自建配置（非注入）：读 config.json 拿批量大小与默认数据源
             InitializeBatchSettings();
         }
 
+        // +MQTT 通路：在此"接线"——把 MqttService 的两个事件挂到本类私有方法上，
+        // 之后每条消息到达都会自动流入 OnMqttMessageReceived（数据通路②的源头）
+        /// <summary>
+        /// 在最小形态基础上增加 MQTT 通路：挂接消息接收与断线事件，消息到达自动流入 MQTT 处理路径。
+        /// </summary>
+        /// <param name="alarmService">报警判定与边沿通知服务。</param>
+        /// <param name="mqttService">MQTT 数据源服务。</param>
         public DeviceService(IAlarmService alarmService, IMqttService mqttService) : this(alarmService)
         {
             _mqttService = mqttService;
@@ -51,17 +146,63 @@ namespace MetalMonitor.Core
             _mqttService.Disconnected += OnMqttDisconnected;
         }
 
+        // +落库：拿到数据库服务后，三步汇合点的第三步（EnqueueDataRecord）才真正生效
+        /// <summary>
+        /// 在最小形态基础上增加落库能力：缓冲记录达到批量阈值后可写入数据库。
+        /// </summary>
+        /// <param name="alarmService">报警判定与边沿通知服务。</param>
+        /// <param name="databaseService">数据库落库服务。</param>
         public DeviceService(IAlarmService alarmService, IDatabaseService databaseService) : this(alarmService)
         {
             _databaseService = databaseService;
         }
 
+        // 全功能形态（DI 运行时实际选中）：先链到 MQTT 版完成事件接线，再补上落库能力
+        /// <summary>
+        /// 全功能形态（DI 运行时实际选中的参数最多构造函数）：报警 + MQTT 通路 + 批量落库全部可用。
+        /// </summary>
+        /// <param name="alarmService">报警判定与边沿通知服务。</param>
+        /// <param name="mqttService">MQTT 数据源服务。</param>
+        /// <param name="databaseService">数据库落库服务。</param>
         public DeviceService(IAlarmService alarmService, IMqttService mqttService, IDatabaseService databaseService) : this(alarmService, mqttService)
         {
             _databaseService = databaseService;
         }
 
-        // 单元测试专用：显式注入配置（internal：DI 容器看不到，不会参与构造函数选择）
+        // 全功能形态 + 串口接入（DI 运行时实际选中的参数最多构造函数）：
+        // 先链到 3 参全功能版完成公共初始化，再"接线"串口——
+        // 把 SerialService.DataReceived 与 FrameParser.FrameParsed 挂到本类私有方法上，
+        // 之后原始字节到达会自动流入 OnSerialRawData → FrameParser → OnFrameParsed（数据通路③的源头）
+        /// <summary>
+        /// 全功能形态 + 串口接入：在报警/MQTT/落库之上接入串口通路，挂接原始字节与解析帧事件，
+        /// 并以启动只读路由表快照建立帧路由器。
+        /// </summary>
+        /// <param name="alarmService">报警判定与边沿通知服务。</param>
+        /// <param name="mqttService">MQTT 数据源服务。</param>
+        /// <param name="databaseService">数据库落库服务。</param>
+        /// <param name="serialService">串口数据源服务（原始字节来源）。</param>
+        /// <param name="frameParser">协议帧解析器（原始字节 → SensorDataFrame）。</param>
+        public DeviceService(IAlarmService alarmService, IMqttService mqttService, IDatabaseService databaseService,
+            ISerialService serialService, FrameParser frameParser) : this(alarmService, mqttService, databaseService)
+        {
+            _serialService = serialService;
+            _frameParser = frameParser;
+            // 路由表为启动只读快照（运行中不变），构造时建立路由器即可
+            _frameRouter = new FrameRouter(_configService.GetNodeRoutingSnapshot());
+            _serialService.DataReceived += OnSerialRawData;
+            _frameParser.FrameParsed += OnFrameParsed;
+        }
+
+        // 单元测试专用：显式注入配置（internal：DI 容器看不到，不会参与构造函数选择）。
+        // 与 public 版的关键差异：ConfigService 由测试提供（可指向临时目录），
+        // 避免测试读写真实 config.json，也绕开 DI 的构造函数选择
+        /// <summary>
+        /// 单元测试专用构造函数：由测试显式提供配置实例（可指向临时目录），避免读写真实 config.json。
+        /// </summary>
+        /// <param name="alarmService">报警判定与边沿通知服务（可为测试替身）。</param>
+        /// <param name="databaseService">数据库落库服务（可为测试替身）。</param>
+        /// <param name="configService">测试提供的配置服务实例。</param>
+        /// <remarks>声明为 internal 并对 DI 容器不可见，不参与构造函数选择。</remarks>
         internal DeviceService(IAlarmService alarmService, IDatabaseService databaseService, ConfigService configService)
         {
             _alarmService = alarmService;
@@ -71,54 +212,88 @@ namespace MetalMonitor.Core
             InitializeBatchSettings();
         }
 
+        /// <summary>
+        /// 从配置服务初始化批量落库参数：批量条数（非正值回退 50）与持久化的数据源选择。
+        /// </summary>
         private void InitializeBatchSettings()
         {
             _batchSize = _configService.BatchSize > 0 ? _configService.BatchSize : 50;
-            _selectedDataSource = _configService.DataSource;
+            // config.json 中的历史值可能是任意字符串（旧版本/手工编辑），未知值回退模拟数据
+            _selectedDataSource = _configService.DataSource.TryToDataSource(out var persisted)
+                ? persisted : DataSourceKind.Simulation;
         }
 
+        /// <summary>
+        /// 启动时按需预连接 MQTT：仅当持久化数据源为 MQTT 时连接 Broker 并订阅
+        /// metalmonitor/devices/# 主题。
+        /// </summary>
+        /// <returns>表示异步初始化操作的任务。</returns>
+        /// <remarks>
+        /// 非 MQTT 数据源直接返回，避免抢占用户选择的数据源；
+        /// 连接或订阅失败时静默回退模拟数据并写回配置，不向上抛出异常。
+        /// </remarks>
         public async Task InitializeMqttAsync()
         {
+            // 启动时若持久化数据源为串口：复用切源逻辑尝试连接（失败时同样静默回退模拟数据并写回配置）
+            if (_selectedDataSource == DataSourceKind.Serial)
+            {
+                await SetDataSourceAsync(DataSourceKind.Serial.ToDisplay()).ConfigureAwait(false);
+                return;
+            }
+
             // 仅当保存的数据来源为 MQTT 时才在启动时预连接，避免抢占用户选择的数据源
-            if (_selectedDataSource != "MQTT")
+            if (_selectedDataSource != DataSourceKind.Mqtt)
                 return;
 
             if (_mqttService != null && !_mqttService.IsConnected)
             {
                 try
                 {
-                    await _mqttService.ConnectAsync();
-                    await _mqttService.SubscribeAsync("metalmonitor/devices/#");
+                    await _mqttService.ConnectAsync().ConfigureAwait(false);
+                    await _mqttService.SubscribeAsync("metalmonitor/devices/#").ConfigureAwait(false);
                     _useMqtt = true;
                 }
                 catch
                 {
                     // 连接失败：回退到模拟数据
                     _useMqtt = false;
-                    _selectedDataSource = "模拟数据";
-                    _configService.DataSource = "模拟数据";
+                    _selectedDataSource = DataSourceKind.Simulation;
+                    _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
                 }
             }
         }
 
+        /// <summary>
+        /// 切换数据来源：先强制冲刷缓冲防丢数据，再持久化选择并按目标通路连接/断开 MQTT。
+        /// </summary>
+        /// <param name="source">目标数据源名称（"模拟数据"/"MQTT"/"串口"）。</param>
+        /// <returns>表示异步切换操作的任务。</returns>
+        /// <remarks>
+        /// MQTT 不可用或连接失败时回退到模拟数据；串口不可用（串口能力缺失）或连接失败时同样回退到模拟数据；
+        /// 切回模拟数据时若 MQTT 已连接则主动断开。冲刷与断连异常被隔离吞掉，不阻断切换。
+        /// </remarks>
         public async Task SetDataSourceAsync(string source)
         {
             // 切换数据源前先冲刷剩余的缓冲数据，避免切换瞬间丢失
-            try { await FlushAsync(); } catch { }
+            try { await FlushAsync().ConfigureAwait(false); } catch { }
 
-            _selectedDataSource = source;
-            _configService.DataSource = source;
-            switch (source)
+            // UI/配置传入的是显示名；未知名称（历史 config.json / 手工编辑）统一回退模拟数据
+            if (!source.TryToDataSource(out var target))
+                target = DataSourceKind.Simulation;
+
+            _selectedDataSource = target;
+            _configService.DataSource = target.ToDisplay();
+            switch (target)
             {
-                case "MQTT":
+                case DataSourceKind.Mqtt:
                     if (_mqttService != null)
                     {
                         try
                         {
                             if (!_mqttService.IsConnected)
                             {
-                                await _mqttService.ConnectAsync();
-                                await _mqttService.SubscribeAsync("metalmonitor/devices/#");
+                                await _mqttService.ConnectAsync().ConfigureAwait(false);
+                                await _mqttService.SubscribeAsync("metalmonitor/devices/#").ConfigureAwait(false);
                             }
                             _useMqtt = true;
                         }
@@ -126,54 +301,126 @@ namespace MetalMonitor.Core
                         {
                             // 连接失败：回退到模拟数据，由 UI 层同步回下拉框
                             _useMqtt = false;
-                            _selectedDataSource = "模拟数据";
-                            _configService.DataSource = "模拟数据";
+                            _selectedDataSource = DataSourceKind.Simulation;
+                            _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
                         }
                     }
                     else
                     {
                         _useMqtt = false;
-                        _selectedDataSource = "模拟数据";
-                        _configService.DataSource = "模拟数据";
+                        _selectedDataSource = DataSourceKind.Simulation;
+                        _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
+                    }
+                    // 串口启用中则断开，避免切到 MQTT 后旧串口通路继续推数据
+                    _useSerial = false;
+                    if (_serialService?.IsConnected == true)
+                    {
+                        try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
                     }
                     break;
-                case "串口":
-                    // 串口尚未实现，暂时回退到模拟数据生成
+                case DataSourceKind.Serial:
+                    // 切到串口前先停掉 MQTT 通路（与模拟数据分支保持一致）
                     _useMqtt = false;
                     if (_mqttService != null && _mqttService.IsConnected)
                     {
-                        try { await _mqttService.DisconnectAsync(); } catch { }
+                        try { await _mqttService.DisconnectAsync().ConfigureAwait(false); } catch { }
+                    }
+
+                    if (_serialService != null)
+                    {
+                        try
+                        {
+                            // 端口名优先用持久化的上次成功端口；为空时回退到首个可用端口
+                            // （ConfigService 约定：空值由调用方回退"首可用口/用户手选"）
+                            string portName = _configService.SerialPortName;
+                            if (string.IsNullOrWhiteSpace(portName))
+                                portName = _serialService.GetAvailablePorts().FirstOrDefault() ?? string.Empty;
+
+                            await _serialService.ConnectAsync(portName).ConfigureAwait(false);
+                            _useSerial = true;                          // 连接成功：置串口启用标记（心跳不再生成模拟数据）
+                            _configService.SerialPortName = portName;   // 把实际使用的端口名回写并持久化
+                        }
+                        catch
+                        {
+                            // 连接失败：同 MQTT 分支一致，回退模拟数据 + 落规范化配置值供 UI 同步
+                            _useSerial = false;
+                            _selectedDataSource = DataSourceKind.Simulation;
+                            _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
+                        }
+                    }
+                    else
+                    {
+                        // 串口能力缺失（3/4 参构造）：保持原回退行为并写日志
+                        _useSerial = false;
+                        _selectedDataSource = DataSourceKind.Simulation;
+                        _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
+                        Console.WriteLine("[DeviceService] 所选数据源为串口，但串口服务不可用，已回退模拟数据");
                     }
                     break;
-                default: // 模拟数据
+                case DataSourceKind.Simulation:
                     _useMqtt = false;
                     if (_mqttService != null && _mqttService.IsConnected)
                     {
-                        try { await _mqttService.DisconnectAsync(); } catch { }
+                        try { await _mqttService.DisconnectAsync().ConfigureAwait(false); } catch { }
+                    }
+                    // 串口启用中则断开，避免切到模拟数据后旧串口通路继续推数据
+                    _useSerial = false;
+                    if (_serialService?.IsConnected == true)
+                    {
+                        try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
                     }
                     break;
             }
         }
 
+        // 重新加载指标配置：先冲刷缓冲数据（防止切换配置时丢数据），
+        // 再从数据库读全量配置，同时把阈值同步给报警服务（报警判定依赖这些阈值）
+        /// <summary>
+        /// 重新从数据库加载全量指标配置，并把阈值字典同步给报警服务。
+        /// </summary>
+        /// <returns>表示异步重载操作的任务；无数据库服务时仅冲刷缓冲后返回。</returns>
+        /// <remarks>
+        /// 加载前先强制冲刷缓冲，防止配置切换导致在途数据丢失；
+        /// 配置快照以整体替换方式更新，全程 ConfigureAwait(false)，Core 层不依赖 UI 同步上下文。
+        /// </remarks>
         public async Task ReloadMetricConfigsAsync()
         {
-            try { await FlushAsync(); } catch { }
+            try { await FlushAsync().ConfigureAwait(false); } catch { }
 
             if (_databaseService != null)
             {
-                _metricConfigs = await _databaseService.GetAllMetricConfigsAsync();
+                // ConfigureAwait(false)：Core 层不碰 UI，无需回原始同步上下文，
+                // 也避免 Dispose 时 GetAwaiter().GetResult() 与 UI 线程形成死锁
+                _metricConfigs = await _databaseService.GetAllMetricConfigsAsync().ConfigureAwait(false);
                 var dict = new Dictionary<string, MetricConfig>();
                 foreach (var c in _metricConfigs)
                     dict[c.Name] = c;
+                // D3：同一份字典既供报警阈值，也供单位查询——热路径不再每次线性扫 _metricConfigs
+                _metricConfigsByName = dict;
                 _alarmService.UpdateThresholds(dict);
             }
         }
 
+        /// <summary>
+        /// 获取当前内存中的指标配置快照引用。
+        /// </summary>
+        /// <returns>指标配置列表；该列表为整体替换式更新，调用方不应就地修改其内容。</returns>
         public List<MetricConfig> GetMetricConfigs()
         {
             return _metricConfigs;
         }
 
+        // MQTT 通路入口：回调来自 MQTTnet 内部线程（非 UI 线程）；
+        // 坏消息解析失败静默丢弃（故障隔离：一条坏消息不能中断后续消息处理）
+        /// <summary>
+        /// MQTT 消息接收入口（数据通路②）：反序列化消息负载并转交设备更新逻辑。
+        /// </summary>
+        /// <param name="sender">事件发送方（MqttService 实例），未使用。</param>
+        /// <param name="e">消息事件参数，Payload 为设备指标 JSON。</param>
+        /// <remarks>
+        /// 运行在 MQTTnet 后台线程；反序列化失败或负载为 null 时静默丢弃，
+        /// 做异常隔离以保证单条坏消息不中断后续消息处理。
+        /// </remarks>
         private void OnMqttMessageReceived(object? sender, MqttMessageReceivedEventArgs e)
         {
             try
@@ -189,14 +436,34 @@ namespace MetalMonitor.Core
             }
         }
 
+        // MQTT 消息 → 设备指标的映射，与模拟数据走同一个"三步汇合点"
+        /// <summary>
+        /// 将一条 MQTT 设备消息映射到设备指标，逐指标执行与模拟通路一致的三步：
+        /// 报警判断 → SetMetricValue 触发 UI 事件 → 进落库缓冲。
+        /// </summary>
+        /// <param name="deviceData">反序列化后的设备消息（设备名 + 指标键值集）。</param>
+        /// <remarks>
+        /// 设备查找在 <see cref="_devicesLock"/> 内完成，取出对象后的操作在锁外进行
+        /// （Device 内部使用线程安全结构，避免长时间持锁）；
+        /// 设备不存在、负载缺指标集或设备被停用（IsActive=false）时直接忽略，不更新/不报警/不落库；
+        /// 先写报警状态再写值，避免 UI 读到"新值+旧报警状态"的瞬时不一致。
+        /// </remarks>
         private void UpdateDeviceFromMqtt(MqttDeviceData deviceData)
         {
             Device? device;
+            // lock 保护设备集合的并发读：MQTT 后台线程查设备，
+            // 同时 UI 线程可能在 ReloadDevices 修改集合；取出 device 后在锁外操作该对象
+            // （Device 内部用 ConcurrentDictionary 已线程安全，避免长时间持锁）
             lock (_devicesLock)
             {
-                device = _devices.FirstOrDefault(d => d.Name == deviceData.Name);
+                // D3：改用按名索引（语义与旧 FirstOrDefault 等价：同名取先出现者，见 RebuildDeviceIndex）
+                _devicesByName.TryGetValue(deviceData.Name, out device);
             }
             if (device == null || deviceData.Metrics == null)
+                return;
+
+            // 与模拟数据通路对齐：用户在 UI 禁用的设备，即使 MQTT 推来数据也不更新/不报警/不落库
+            if (!device.IsActive)
                 return;
 
             foreach (var kvp in deviceData.Metrics)
@@ -204,36 +471,190 @@ namespace MetalMonitor.Core
                 string metricName = kvp.Key;
                 double value = kvp.Value;
 
-                // 与模拟数据路径保持一致：先更新报警状态再写值，避免 UI 读到滞后报警状态
-                bool isAlarming = _alarmService.ShouldAlarm(metricName, value);
-                device.SetMetricAlarmState(metricName, isAlarming);
-
-                device.SetMetricValue(metricName, value);
-                if (metricName == "Temperature")
-                    device.Temperature = value;
-
-                _alarmService.CheckAndNotify(device.Name, metricName, value);
-
-                if (_databaseService != null)
-                {
-                    EnqueueDataRecord(new DataRecord
-                    {
-                        DeviceId = device.Id,
-                        DeviceName = device.Name,
-                        MetricName = metricName,
-                        Value = value,
-                        Unit = GetMetricUnit(metricName),
-                        Timestamp = DateTime.Now
-                    });
-                }
+                // 接入层汇合点：只写暂存区 + 追加落库；报警判定与写值统一在心跳排空时执行，
+                // 全项目只保留一套"业务三步"实现（见 ApplyPendingSamples）
+                StageSample(device, metricName, value);
             }
         }
 
+        // 串口通路入口·第一段：SerialPort 后台线程推来原始字节，转交 FrameParser 组装成帧；
+        // 帧组装与 CRC 校验不在本类，本类只"喂字节"
+        /// <summary>
+        /// 串口原始字节接收入口（数据通路③的第一段）：把本次收到的原始字节转交 <see cref="FrameParser"/> 喂入，
+        /// 由解析器组装成完整帧后再经 <see cref="OnFrameParsed"/> 处理。
+        /// </summary>
+        /// <param name="sender">事件发送方（SerialService 实例），未使用。</param>
+        /// <param name="e">原始字节事件参数，载荷为本次读取的原始字节（可能半帧或粘包）。</param>
+        /// <remarks>运行在 SerialPort 内部后台线程；整体 try-catch，避免异常被转寄到全局异常处理器。</remarks>
+        private void OnSerialRawData(object? sender, SerialRawDataEventArgs e)
+        {
+            try
+            {
+                _frameParser?.Feed(e.Data);
+            }
+            catch
+            {
+                // 回调事件处理器不得把异常抛回后台线程，静默吞掉
+            }
+        }
+
+        // 串口通路入口·第二段：解析后的帧按 NODE_ID 路由到设备，命中后写暂存区 + 追加落库；
+        // 未知节点/未匹配设备两类帧丢弃并各自计数（路由是策略，判定在 FrameRouter）
+        /// <summary>
+        /// 串口协议帧接收入口（数据通路③的第二段）：按 NODE_ID 路由到设备，命中后把温度/电压样本写入暂存区
+        /// 并追加落库缓冲；未知节点与未匹配设备两类帧丢弃并各自计数。
+        /// </summary>
+        /// <param name="sender">事件发送方（FrameParser 实例），未使用。</param>
+        /// <param name="frame">解析后的传感器数据帧（NODE_ID/温度/电压/DS18B20 状态）。</param>
+        /// <remarks>
+        /// 运行在串口后台线程；串口能力缺失（3/4 参构造，<c>_frameRouter</c> 为 null）时安全跳过；
+        /// 设备被停用（IsActive=false）时跳过，不更新/不报警/不落库；
+        /// 指标键名与 MQTT 通路完全一致：Temperature（℃ 原值）、Voltage（由帧内 mV 换算为 V）；
+        /// 整体 try-catch，避免异常被转寄到全局异常处理器。
+        /// </remarks>
+        private void OnFrameParsed(object? sender, SensorDataFrame frame)
+        {
+            try
+            {
+                // 串口能力缺失（3/4 参构造）时 _frameRouter 为 null，安全跳过
+                if (_frameRouter == null) return;
+
+                // 设备列表取快照后在锁外判定：FrameRouter 不持锁、无副作用
+                List<Device> snapshot;
+                lock (_devicesLock)
+                {
+                    snapshot = _devices.AsReadOnly().ToList();
+                }
+
+                var outcome = _frameRouter.Resolve(frame.NodeId, snapshot, out var device);
+                switch (outcome)
+                {
+                    case RouteOutcome.UnknownNode:
+                        // NODE_ID 不在路由表中（含 0xFF 保留值）：丢弃并计数
+                        UnknownNodeCount++;
+                        Console.WriteLine($"[DeviceService] 丢弃未知节点帧 NODE_ID=0x{frame.NodeId:X2}");
+                        return;
+                    case RouteOutcome.UnroutedDevice:
+                        // 路由表指向的设备名在当前设备列表中不存在：丢弃并计数
+                        UnroutedDeviceCount++;
+                        Console.WriteLine($"[DeviceService] 丢弃未匹配设备帧 NODE_ID=0x{frame.NodeId:X2}");
+                        return;
+                }
+
+                if (device == null) return;
+
+                // 用户禁用设备：不更新/不报警/不落库
+                if (!device.IsActive) return;
+
+                // 指标键名与 MQTT 通路保持一致；电压由帧内的 mV 换算为 V（MetricConfig 的 Voltage 单位为 V）
+                StageSample(device, "Temperature", frame.Temperature);
+                StageSample(device, "Voltage", frame.VoltageMv / 1000.0);
+            }
+            catch
+            {
+                // 回调事件处理器不得把异常抛回后台线程，静默吞掉
+            }
+        }
+
+        // 接入层汇合点：三条数据源（模拟/MQTT/串口）的接入段都调用这里——
+        // 写线程安全暂存区（同键 latest-wins）+ 追加原始样本到落库缓冲（保真）
+        /// <summary>
+        /// 接入层汇合点：把一个"设备 + 指标"样本写入线程安全暂存区（同键只保留最新值），
+        /// 并同步追加原始样本到落库缓冲。
+        /// </summary>
+        /// <param name="device">样本所属设备。</param>
+        /// <param name="metricName">指标名（与 MetricConfig.Name 一致，如 Temperature/Voltage）。</param>
+        /// <param name="value">指标值（已换算为物理量单位）。</param>
+        /// <remarks>
+        /// 暂存区保证同键 latest-wins（心跳排空时只派发最新值）；落库缓冲则逐条追加（保真：
+        /// 即使同键被后到的样本覆盖，原始样本也已进缓冲）。报警判定与写值不在此执行——
+        /// 统一交给心跳 <see cref="ApplyPendingSamples"/>，全项目只保留一套"业务三步"实现。
+        /// </remarks>
+        private void StageSample(Device device, string metricName, double value)
+        {
+            // 写暂存区：同一「设备+指标」只保留最新值（latest-wins）
+            lock (_stagingLock)
+                _pendingSamples[(device, metricName)] = value;
+
+            // 追加原始样本到落库缓冲（与旧 MQTT/模拟路径一致：攒够 BatchSize 才批量写）
+            if (_databaseService != null)
+            {
+                EnqueueDataRecord(new DataRecord
+                {
+                    DeviceId = device.Id,
+                    DeviceName = device.Name,
+                    MetricName = metricName,
+                    Value = value,
+                    Unit = GetMetricUnit(metricName),
+                    Timestamp = DateTime.Now
+                });
+            }
+        }
+
+        // 派发层排空：全项目唯一一套"业务三步"实现——
+        // 报警判定 → SetMetricAlarmState → SetMetricValue → CheckAndNotify（边沿触发）
+        /// <summary>
+        /// 排空暂存区：对每一项执行「报警判定 → SetMetricAlarmState → SetMetricValue → CheckAndNotify」，
+        /// 这是全项目唯一一套"业务三步"实现（模拟/MQTT/串口三条来源统一在此收口）。
+        /// </summary>
+        /// <remarks>
+        /// 锁内仅"拷贝取出 + 清空"，逐项写设备在锁外执行（Device 内部线程安全，避免长时间持锁）；
+        /// 报警状态先于指标值写入，保证 UI 事件回调读到的报警态与新值一致（见 Device 的注释约定）；
+        /// 设备被停用（IsActive=false）时跳过，不更新/不报警；
+        /// 同「设备+指标」经暂存区聚合后每拍只调用一次 CheckAndNotify，沿用其边沿触发语义。
+        /// </remarks>
+        private void ApplyPendingSamples()
+        {
+            List<KeyValuePair<(Device Device, string Metric), double>> samples;
+            lock (_stagingLock)
+            {
+                if (_pendingSamples.Count == 0) return;
+                samples = _pendingSamples.ToList();   // 拷贝取出
+                _pendingSamples.Clear();              // 原暂存区清空，继续接新样本
+            }
+
+            foreach (var sample in samples)
+            {
+                var device = sample.Key.Device;
+                string metricName = sample.Key.Metric;
+                double value = sample.Value;
+
+                if (!device.IsActive) continue;
+
+                // 三步汇合点·第①步：报警判定（无状态只读）
+                bool alarming = _alarmService.ShouldAlarm(metricName, value);
+
+                // 三步汇合点·第②步：先写报警状态再写值——
+                // 因为 SetMetricValue 会触发 UI 事件，UI 此时会同时读"值"和"是否报警"，
+                // 若先写值后写状态，UI 可能读到"新值+旧报警状态"的不一致瞬间
+                device.SetMetricAlarmState(metricName, alarming);
+                device.SetMetricValue(metricName, value);   // 触发 PropertyChanged → UI 卡片刷新
+
+                // 边沿检测：只在跳变时发事件；按「设备+指标」聚合后每拍仅一次
+                _alarmService.CheckAndNotify(device.Name, metricName, value);
+            }
+        }
+
+        // 模拟数据通路（心跳驱动，跑在 UI 线程）：
+        // 每拍对每个活跃设备的每个活跃指标生成平滑随机值，走"报警→写值→缓冲"三步
+        /// <summary>
+        /// 模拟数据通路（数据通路①）：心跳驱动，遍历每个活跃设备的每个活跃指标，
+        /// 生成平滑随机值并执行"报警判断 → SetMetricValue 触发 UI 事件 → 进落库缓冲"三步。
+        /// </summary>
+        /// <remarks>
+        /// 运行在 UI 线程。指标配置仅取引用快照（整体替换式更新，迭代期间安全）；
+        /// 设备列表则在 <see cref="_devicesLock"/> 内拷贝一份快照后遍历，
+        /// 防止遍历期间集合被增删抛出"集合已修改"异常；
+        /// 停用设备整台跳过，停用指标仅清除其报警状态；
+        /// 报警状态先于指标值写入，保证 UI 事件回调读到的报警态与新值一致。
+        /// </remarks>
         private void UpdateDeviceData()
         {
-            // 快照配置，避免与 UI 线程重载配置竞争
+            // 快照引用而非拷贝内容：_metricConfigs 是整体替换式更新，
+            // 只需在循环开始时拿一份引用，循环中即使被替换也不影响本次迭代
             var metrics = _metricConfigs;
-            // 快照设备列表，避免与 ReloadDevices 并发修改导致枚举异常
+            // 设备列表则需要真拷贝一份快照：因为循环过程中可能被增删，
+            // 直接 foreach 原集合会抛"集合已修改"异常
             List<Device> snapshot;
             lock (_devicesLock)
             {
@@ -252,50 +673,44 @@ namespace MetalMonitor.Core
                     }
                     double value = GenerateSmoothValue(device.Id, metric);
 
-                    // 每指标独立报警检测
-                    bool alarming = _alarmService.ShouldAlarm(metric.Name, value);
-
-                    // 先更新报警状态，再写入值触发 UI 事件，
-                    // 保证 UI 线程处理值更新回调时读到的报警状态与本拍值一致（避免跨线程竞态导致报警滞后）
-                    device.SetMetricAlarmState(metric.Name, alarming);
-                    device.SetMetricValue(metric.Name, value);
-                    _alarmService.CheckAndNotify(device.Name, metric.Name, value);
-
-                    // 兼容旧的 Temperature 主属性
-                    if (metric.Name == "Temperature")
-                    {
-                        device.Temperature = value;
-                    }
-
-                    EnqueueDataRecord(new DataRecord
-                    {
-                        DeviceId = device.Id,
-                        DeviceName = device.Name,
-                        MetricName = metric.Name,
-                        Value = value,
-                        Unit = metric.Unit,
-                        Timestamp = DateTime.Now
-                    });
+                    // 模拟数据同样只写暂存区 + 追加落库（保真）：三条数据源汇入同一路径，
+                    // "报警判定 → 写报警状态 → 写值"的业务三步统一在心跳排空时执行（见 ApplyPendingSamples）
+                    StageSample(device, metric.Name, value);
                 }
             }
         }
 
         // 平滑随机游走：围绕上一值小幅波动，避免曲线剧烈抖动
+        /// <summary>
+        /// 为指定设备的指标生成一拍平滑随机游走值：以上一值为中心做量程 10% 以内的随机波动，
+        /// 钳制在配置量程内并保留 1 位小数。
+        /// </summary>
+        /// <param name="deviceId">设备唯一标识，与指标名共同构成上一值缓存的键。</param>
+        /// <param name="metric">指标配置，提供量程上下限。</param>
+        /// <returns>本拍生成的模拟指标值；首次生成时从量程中点起步。</returns>
         private double GenerateSmoothValue(string deviceId, MetricConfig metric)
         {
             string key = $"{deviceId}:{metric.Name}";
-            double span = metric.MaxValue - metric.MinValue;
-            if (span <= 0) span = 1;
+            double span = metric.MaxValue - metric.MinValue;   // 指标量程，用于缩放波动幅度
+            if (span <= 0) span = 1;                              // 防止除零/量程配置错误
 
+            // 读取上一值作为本次起点（无历史则从量程中点开始）
             if (!_lastSimValues.TryGetValue(key, out double last))
                 last = metric.MinValue + span * 0.5;
 
+            // 波动幅度 = 量程的 10% × [-0.5, +0.5]，即单步最多变动量程的 5%
             double next = last + (_random.NextDouble() - 0.5) * span * 0.1;
-            next = Math.Clamp(next, metric.MinValue, metric.MaxValue);
-            _lastSimValues[key] = next;
-            return Math.Round(next, 1);
+            next = Math.Clamp(next, metric.MinValue, metric.MaxValue);  // 钳制在合法范围内
+            _lastSimValues[key] = next;   // 回写，作为下一拍的起点
+            return Math.Round(next, 1);   // 保留 1 位小数，与 UI 显示精度一致
         }
 
+        // 返回设备列表快照（拷贝）：调用方拿到的是副本，后续对原集合的修改不影响它；
+        // 这是跨线程暴露集合的安全做法——调用方可以自由遍历而无需加锁
+        /// <summary>
+        /// 返回设备列表的拷贝快照，供调用方跨线程安全遍历。
+        /// </summary>
+        /// <returns>当前设备集合的一份新副本；后续原集合的增删不影响该副本。</returns>
         public List<Device> GetDevices()
         {
             lock (_devicesLock)
@@ -304,51 +719,107 @@ namespace MetalMonitor.Core
             }
         }
 
+        // MQTT 断线回调：只翻转旗标，真正的重连/降级在心跳 UpdateDevicesAsync 里处理
+        /// <summary>
+        /// MQTT 断线事件回调：仅将 MQTT 通路旗标置为 false。
+        /// </summary>
+        /// <param name="sender">事件发送方，未使用。</param>
+        /// <param name="e">事件参数，未使用。</param>
+        /// <remarks>真正的回退动作发生在下一次心跳 <see cref="UpdateDevicesAsync"/>（自动改走模拟数据），回调内不做重连。</remarks>
         private void OnMqttDisconnected(object? sender, EventArgs e)
         {
             _useMqtt = false;
         }
 
+        // 心跳入口（UI 定时器每秒调一次）：本类对上层暴露的唯一"推进"方法。
+        // 四件事按序执行：首次同步 → 生成/接收数据 → 批量落库 → WAL 回收
+        /// <summary>
+        /// 心跳推进入口（UI 定时器每秒调用一次），按序完成四件事：
+        /// 首次设备/配置同步 → 模拟数据生成（MQTT 数据由事件独立驱动）→ 阈值批量落库 → 周期 WAL 回收。
+        /// </summary>
+        /// <returns>表示本拍异步处理的任务；对象已释放时立即完成。</returns>
+        /// <remarks>
+        /// 首次心跳且数据库可用时从库同步设备列表与指标配置（<c>_devicesLoaded</c> 保证只做一次）；
+        /// 未启用 MQTT 或 MQTT 已断连时执行模拟数据生成，MQTT 通路本身不在此调用（消息事件驱动）；
+        /// 缓冲达 BatchSize 时由 <see cref="FlushIfNeededAsync"/> 写库；距上次检查点满 60 秒时回收 WAL。
+        /// </remarks>
         public async Task UpdateDevicesAsync()
         {
             if (_disposed) return;
 
-            // 首次加载设备列表和指标配置
+            // 首次进入时从数据库拉设备列表和指标配置（只做一次，靠 _devicesLoaded 旗标短路）
             if (!_devicesLoaded && _databaseService != null)
             {
-                await SyncDevicesFromDatabaseAsync();
+                await SyncDevicesFromDatabaseAsync().ConfigureAwait(false);
 
                 if (_metricConfigs.Count == 0)
                 {
-                    await ReloadMetricConfigsAsync();
+                    await ReloadMetricConfigsAsync().ConfigureAwait(false);
                 }
             }
 
-            if (!_useMqtt || !_mqttService?.IsConnected == true)
+            // 数据源选择：未启用 MQTT，或 MQTT 已断连 → 走模拟数据；
+            // 注意 MQTT 通路不在这里调用——它由事件驱动（OnMqttMessageReceived），此处只决定"是否还用模拟"
+            // 串口启用期间同样不生成模拟数据（_useSerial 为 true 时整条模拟生成被短路）
+            if (!_useSerial && (!_useMqtt || !_mqttService?.IsConnected == true))
             {
                 UpdateDeviceData();
             }
 
-            // 达到批量阈值自动落盘；MQTT 路径产生的缓冲数据也在此统一冲刷
-            await FlushIfNeededAsync();
+            // 排空暂存区：模拟/MQTT/串口三条来源的样本在此统一执行"业务三步"（报警判定→写报警状态→写值→边沿通知）
+            ApplyPendingSamples();
 
-            // 周期性回收 WAL 文件空间
-            await CheckpointIfNeededAsync();
+            // 三步汇合点的第三步在此统一冲刷：达到阈值才写库，摊薄磁盘 IO 开销
+            await FlushIfNeededAsync().ConfigureAwait(false);
+
+            // 每 60 秒回收一次 WAL 文件，防止 SQLite 临时文件无限增长
+            await CheckpointIfNeededAsync().ConfigureAwait(false);
+        }
+
+        // D3：整体重建设备名索引。调用方必须已持有 _devicesLock
+        /// <summary>
+        /// 按设备名整体重建 <see cref="_devicesByName"/>（调用方必须已持有 <see cref="_devicesLock"/>）。
+        /// </summary>
+        /// <remarks>
+        /// 只在设备集合发生结构变更（增删/改名）后调用，因此无需增量维护、也不会有陈旧条目；
+        /// 同名设备取先出现者，与旧 <c>_devices.FirstOrDefault(d =&gt; d.Name == ...)</c> 的语义逐字一致。
+        /// </remarks>
+        private void RebuildDeviceIndex()
+        {
+            _devicesByName.Clear();
+            foreach (var device in _devices)
+            {
+                if (!_devicesByName.ContainsKey(device.Name))
+                    _devicesByName[device.Name] = device;
+            }
         }
 
         // 增量同步设备列表：保留 Id 相同的旧对象（卡片 ViewModel 仍持有引用可继续收事件），
         // 移除已删除的，追加新增的。避免 Clear+重建导致引用失效和并发枚举异常。
+        /// <summary>
+        /// 从数据库增量同步设备列表到内存活体集合：删除库中已不存在的设备、追加新设备、
+        /// 对 Id 相同的旧对象原地更新属性（不重建对象）。
+        /// </summary>
+        /// <returns>表示异步同步操作的任务；无数据库服务时立即完成。</returns>
+        /// <remarks>
+        /// 数据库读取在 <see cref="_devicesLock"/> 锁外执行（IO 期间不持锁，避免阻塞 MQTT/UI 线程），
+        /// 仅集合增删改阶段进入临界区；删除采用倒序遍历避免索引位移跳过元素；
+        /// 复用同 Id 旧对象是为了保持 UI 卡片持有的引用不断联，后续 SetMetricValue 事件仍能推送到卡片。
+        /// 同步完成后置位 <c>_devicesLoaded</c>，使后续心跳跳过本段。
+        /// </remarks>
         private async Task SyncDevicesFromDatabaseAsync()
         {
             if (_databaseService == null) return;
-            var dbDevices = await _databaseService.GetAllDevicesAsync();
+            // await 在锁外：数据库 IO 期间不持锁，避免阻塞 MQTT/UI 线程访问 _devices
+            var dbDevices = await _databaseService.GetAllDevicesAsync().ConfigureAwait(false);
 
+            // 进入临界区：下面对 _devices 的增删改必须串行化
             lock (_devicesLock)
             {
                 var existingIds = _devices.Select(d => d.Id).ToHashSet();
                 var dbIds = dbDevices.Select(d => d.Id).ToHashSet();
 
-                // 移除被删除的
+                // 倒序删除：正向删除会因索引位移跳过元素
                 for (int i = _devices.Count - 1; i >= 0; i--)
                 {
                     if (!dbIds.Contains(_devices[i].Id))
@@ -358,12 +829,13 @@ namespace MetalMonitor.Core
                 }
 
                 // 追加新增的（保留 Id 相同的旧对象，仅更新属性以保持引用不变）
+                // 关键设计：不 new 新 Device——UI 卡片持有的是旧引用，复用它才能让
+                // 后续 SetMetricValue 继续推送到卡片；重建对象会让卡片"断联"
                 var existingByDeviceId = _devices.ToDictionary(d => d.Id);
                 foreach (var dbDevice in dbDevices)
                 {
                     if (existingByDeviceId.TryGetValue(dbDevice.Id, out var existing))
                     {
-                        // 复用旧对象，仅刷新可能被编辑过的字段
                         existing.Name = dbDevice.Name;
                         existing.DeviceType = dbDevice.DeviceType;
                         existing.Location = dbDevice.Location;
@@ -376,28 +848,58 @@ namespace MetalMonitor.Core
                     }
                 }
 
-                _devicesLoaded = true;
+                // D3：设备集合唯一的结构变更点（增删与改名都在上面的锁内完成），
+                // 索引在此整体重建即可与 _devices 强一致，无需增量维护
+                RebuildDeviceIndex();
+
+                _devicesLoaded = true;   // 标记首次同步完成，下次心跳跳过本段
             }
         }
 
+        /// <summary>
+        /// 转发报警服务的无状态阈值越限判断（门面对外暴露）。
+        /// </summary>
+        /// <param name="metricName">指标名称。</param>
+        /// <param name="value">待判定的指标当前值。</param>
+        /// <returns>当前值是否处于报警态。</returns>
         public bool ShouldAlarm(string metricName, double value)
         {
             return _alarmService.ShouldAlarm(metricName, value);
         }
 
+        /// <summary>
+        /// 转发查询指定指标当前配置的报警阈值（门面对外暴露）。
+        /// </summary>
+        /// <param name="metricName">指标名称。</param>
+        /// <returns>报警阈值；指标未配置时为 0。</returns>
         public double GetAlarmThreshold(string metricName)
         {
             return _alarmService.GetAlarmThreshold(metricName);
         }
 
+        // UI 层"刷新设备列表"入口：先冲刷缓冲，再强制重新同步数据库
+        /// <summary>
+        /// UI 层"刷新设备列表"入口：先强制冲刷缓冲，再立即从数据库重新同步设备集合。
+        /// </summary>
+        /// <returns>表示异步刷新操作的任务。</returns>
+        /// <remarks>与首次同步不同，本方法每次都执行增量同步（不检查 <c>_devicesLoaded</c>）；冲刷异常被隔离吞掉。</remarks>
         public async Task ReloadDevicesAsync()
         {
-            try { await FlushAsync(); } catch { }
-            await SyncDevicesFromDatabaseAsync();
+            try { await FlushAsync().ConfigureAwait(false); } catch { }
+            await SyncDevicesFromDatabaseAsync().ConfigureAwait(false);
         }
 
         // ===== 批量写入缓冲与 WAL 回收 =====
 
+        // 入队一条待落库记录：锁只保护"加进队列"这一步，不做实际 IO（快）
+        /// <summary>
+        /// 将一条数据记录加入落库缓冲队列（三步汇合点的第三步）。
+        /// </summary>
+        /// <param name="record">待缓冲的数据记录。</param>
+        /// <remarks>
+        /// 对象释放后静默丢弃；<see cref="_batchLock"/> 只保护"加入队列"这一步内存操作，
+        /// 不做任何磁盘 IO，可被 UI 心跳线程与 MQTT 后台线程高频并发调用。
+        /// </remarks>
         private void EnqueueDataRecord(DataRecord record)
         {
             if (_disposed) return;
@@ -405,23 +907,46 @@ namespace MetalMonitor.Core
                 _pendingBatch.Add(record);
         }
 
+        // 阈值冲刷：缓冲达到 BatchSize 才写库；未达到则什么都不做。
+        // 这是整个批量策略的核心——把高频小写入合并成低频大写入
+        /// <summary>
+        /// 阈值冲刷：仅当缓冲记录数达到 BatchSize 时取出整批并写库，否则不做任何操作。
+        /// </summary>
+        /// <returns>表示异步冲刷操作的任务；无数据库服务、已释放或未达阈值时立即完成。</returns>
+        /// <remarks>
+        /// 批量策略的核心——把高频小写入合并成低频大写入。
+        /// 锁内只做"拷贝取出 + 清空队列"，实际写库在锁外执行，
+        /// 避免慢速 IO 长时间持锁阻塞两条数据通路的入队。
+        /// </remarks>
         private async Task FlushIfNeededAsync()
         {
             if (_databaseService == null || _disposed) return;
 
             List<DataRecord>? toFlush = null;
+            // 锁内只做"取出+清空"，实际写库放锁外——写库慢，不能长时间持锁阻塞入队
             lock (_batchLock)
             {
                 if (_pendingBatch.Count >= _batchSize)
                 {
-                    toFlush = new List<DataRecord>(_pendingBatch);
-                    _pendingBatch.Clear();
+                    toFlush = new List<DataRecord>(_pendingBatch);  // 拷贝一份
+                    _pendingBatch.Clear();                            // 原队列清空，继续接新数据
                 }
             }
             if (toFlush != null)
-                await WriteBatchAsync(toFlush);
+                await WriteBatchAsync(toFlush).ConfigureAwait(false);
         }
 
+        // 强制冲刷：不管缓冲多少条都立即写库（切换数据源/退出程序时调用，防丢数据）。
+        // 与 FlushIfNeededAsync 的唯一区别：判断条件是 Count > 0 而非 >= BatchSize
+        /// <summary>
+        /// 强制冲刷：缓冲中只要还有记录就立即取出整批写库，不等待批量阈值。
+        /// </summary>
+        /// <returns>表示异步冲刷操作的任务；无数据库服务、已释放或缓冲为空时立即完成。</returns>
+        /// <remarks>
+        /// 在切换数据源、重新加载配置/设备以及程序退出时调用，防止在途数据丢失。
+        /// 与 <see cref="FlushIfNeededAsync"/> 的唯一区别是触发条件为 Count &gt; 0；
+        /// 同样遵循"锁内取数清空、锁外写库"的约定。
+        /// </remarks>
         public async Task FlushAsync()
         {
             if (_databaseService == null || _disposed) return;
@@ -436,59 +961,105 @@ namespace MetalMonitor.Core
                 }
             }
             if (toFlush != null)
-                await WriteBatchAsync(toFlush);
+                await WriteBatchAsync(toFlush).ConfigureAwait(false);
         }
 
+        // 真正执行批量写库的地方。用 SemaphoreSlim(1,1) 串行化——
+        // 因为 FlushAsync 和 FlushIfNeededAsync 可能被不同路径同时调用，
+        // SQLite 不允许并发写（WAL 模式虽可读写并发，但多写仍会冲突）
+        /// <summary>
+        /// 真正执行批量写库：经 <see cref="_flushLock"/> 串行化后调用数据库服务的单事务批量插入。
+        /// </summary>
+        /// <param name="records">已从缓冲取出、待整批写入的记录。</param>
+        /// <returns>表示异步批量写入的任务。</returns>
+        /// <remarks>
+        /// <see cref="FlushAsync"/> 与 <see cref="FlushIfNeededAsync"/> 可能从不同路径并发触发，
+        /// 而 SQLite/WAL 不允许多写并发，故用 SemaphoreSlim(1,1) 异步互斥；
+        /// 异步等锁不阻塞 UI 线程，信号量在 finally 中确保释放，避免失败后永久阻塞后续写库。
+        /// </remarks>
         private async Task WriteBatchAsync(List<DataRecord> records)
         {
             var db = _databaseService!;
-            await _flushLock.WaitAsync();
+            await _flushLock.WaitAsync().ConfigureAwait(false);   // 异步等锁：等待期间线程可干别的，不阻塞 UI
             try
             {
-                await db.AddDataRecordsBatchAsync(records);
+                await db.AddDataRecordsBatchAsync(records).ConfigureAwait(false);   // 单事务批量 INSERT
             }
             finally
             {
-                _flushLock.Release();
+                _flushLock.Release();   // 无论成功失败都必须释放，否则后续写库永久阻塞
             }
         }
 
+        /// <summary>
+        /// 按指标名从当前配置快照查询单位。
+        /// </summary>
+        /// <param name="metricName">指标名称。</param>
+        /// <returns>配置的指标单位；指标不存在或单位为 null 时返回空字符串。</returns>
         private string GetMetricUnit(string metricName)
-            => _metricConfigs.FirstOrDefault(c => c.Name == metricName)?.Unit ?? string.Empty;
+            => _metricConfigsByName.TryGetValue(metricName, out var config)
+                ? config.Unit ?? string.Empty   // 保留旧语义：Unit 为 null 时也返回空串
+                : string.Empty;
 
+        // 周期性 WAL 检查点：把 WAL 文件内容合并回主数据库并截断 WAL 文件。
+        // WAL 模式下写操作先写 WAL，文件会持续增长；不回收会撑爆磁盘
+        /// <summary>
+        /// 周期性 WAL 检查点：距上次检查点满 60 秒时把 WAL 内容合并回主库并截断 WAL 文件。
+        /// </summary>
+        /// <returns>表示异步检查点判断与执行的任务；不满足周期条件、无数据库服务或已释放时立即完成。</returns>
+        /// <remarks>
+        /// 异常隔离：检查点失败只吞异常并照常更新时间戳，不阻断数据采集，
+        /// 也避免失败时每拍重试造成抖动；最坏后果是 WAL 文件暂时偏大，下周期再试。
+        /// </remarks>
         private async Task CheckpointIfNeededAsync()
         {
             if (_databaseService == null || _disposed) return;
+            // 距上次检查点不足 60 秒则跳过——频率太高反而拖慢写性能
             if (DateTime.UtcNow - _lastCheckpointUtc < CheckpointInterval) return;
 
             try
             {
-                await _databaseService.CheckpointAsync();
+                await _databaseService.CheckpointAsync().ConfigureAwait(false);
             }
             catch
             {
-                // WAL 检查点失败不应阻断数据采集
+                // WAL 检查点失败不应阻断数据采集——最坏情况是 WAL 文件稍大，下次再试
             }
             finally
             {
+                // 无论成功失败都更新时间，避免失败时每拍都重试造成抖动
                 _lastCheckpointUtc = DateTime.UtcNow;
             }
         }
 
         #region IDisposable
+        /// <summary>
+        /// 释放资源：同步强制冲刷剩余缓冲数据以防丢失，然后置位释放标记使各数据通路静默短路。
+        /// </summary>
+        /// <remarks>重复调用安全；冲刷异常被吞掉，保证释放流程不抛出。</remarks>
         public void Dispose()
         {
             if (_disposed) return;
             // 退出时立即落盘剩余缓冲数据
+            //关于这里,是不是该在清空之前停止心跳,否则心跳线程可能还在往_pendingBatch里加数据,导致数据丢失
             try { FlushAsync().GetAwaiter().GetResult(); } catch { }
+            // 退订注入服务的接线（不 Dispose 注入进来的服务——其生命周期由 DI 容器负责）
+            if (_serialService != null) _serialService.DataReceived -= OnSerialRawData;
+            if (_frameParser != null) _frameParser.FrameParsed -= OnFrameParsed;
             _disposed = true;
         }
         #endregion
 
+        /// <summary>
+        /// MQTT 消息负载的反序列化模型（私有嵌套）：设备 Id、设备名与指标名→指标值的键值集。
+        /// </summary>
         private class MqttDeviceData
         {
+            /// <summary>消息中的设备唯一标识。</summary>
             public string Id { get; set; } = string.Empty;
+            /// <summary>设备名称，用于与内存设备集合匹配。</summary>
             public string Name { get; set; } = string.Empty;
+            /// <summary>本设备上报的指标键值集（指标名 → 当前值）。</summary>
             public Dictionary<string, double> Metrics { get; set; } = new();
         }
     }

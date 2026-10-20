@@ -123,8 +123,8 @@
 
 | ID | 任务 | 估算 | 验收/验证方式 | 状态 | 证据/完成日期 |
 |---|---|---|---|---|---|
-| T1.1 | 一次下单三件，规格必须精确：①**DS18B20 成品模块**（三针 VCC/DQ/GND、板载上拉；接线时 VCC 接 3V3 而非 5V，防 DQ 上拉到 5V 烧引脚）②**PTC 黄膜加热片：5V/70℃/1.2-2W**（店铺实测可选档；不选 50℃（达不到 50℃ 设定点）、180℃（烫伤/电流大）、12V 及以上档）③**MOSFET 模块（育松创达实购）**：AD4184 光耦隔离款「隔离MOSFET 替代继电器」¥1.38，**实购 2 个**（满2减1，互作替换备件）；到货必须实测 3.3V：IN 接 3V3 常高→负载通、接 GND→断，两块板结果一致才上 PTC。退路：S8050 三极管预驱动。供电用 ≥1A 手机充电器（2W 工况下实际 ≤0.4A） | 0.2/0.5/1 | 订单截图存 `assets/orders/`；到货逐项核对规格拍照 | TODO | |
-| T1.2 | 仓库建目录 `firmware/` `docs/protocol/` `tools/` `assets/`；`.gitignore` 追加 Keil 段（Objects/ Listings/ JLinkLog.txt 等）；注意全局 `*.png` 规则需加 `!assets/**` 例外 | 0.5/1/2 | 目录与忽略规则已提交；`git status` 干净 | TODO | |
+| T1.1 | 一次下单三件，规格必须精确：①**DS18B20 成品模块**（三针 VCC/DQ/GND、板载上拉；接线时 VCC 接 3V3 而非 5V，防 DQ 上拉到 5V 烧引脚）②**PTC 黄膜加热片：5V/70℃/1.2-2W**（店铺实测可选档；不选 50℃（达不到 50℃ 设定点）、180℃（烫伤/电流大）、12V 及以上档）③**MOSFET 模块（育松创达实购）**：AD4184 光耦隔离款「隔离MOSFET 替代继电器」¥1.38，**实购 2 个**（满2减1，互作替换备件）；到货必须实测 3.3V：IN 接 3V3 常高→负载通、接 GND→断，两块板结果一致才上 PTC。退路：S8050 三极管预驱动。供电用 ≥1A 手机充电器（2W 工况下实际 ≤0.4A） | 0.2/0.5/1 | 订单截图存 `assets/orders/`；到货逐项核对规格拍照 | DONE | 2026-09-18 | `assets/orders/` 四张图（下单截图/DS18B20/PTC/MOSFET 到货照片）齐备；PTC 实测 39~41Ω≈0.6W 低功率档可用；MOSFET 3.3V 通断实测按计划归属 T6.1，不在 W1 阻塞 |
+| T1.2 | 仓库建目录 `firmware/` `docs/protocol/` `tools/` `assets/`；`.gitignore` 追加 Keil 段（Objects/ Listings/ JLinkLog.txt 等）；注意全局 `*.png` 规则需加 `!assets/**` 例外 | 0.5/1/2 | 目录与忽略规则已提交；`git status` 干净 | DONE | 2026-09-14 | commit 103bf9d「硬件起始」，git status 干净 |
 | T1.3 | 安装 Keil MDK Community（或 CubeIDE）+ F1 芯片包；看最小系统/工程结构教程 | 1/2/4 | 空工程编译 0 error 0 warning，截图 | DONE | 2026-09-14 | Keil 已安装，F1 芯片包已装，非社区版待注册码 |
 | T1.4 | LED 1Hz 闪烁（到货后）：GPIO+SysTick/定时器 | 0.5/1.5/4 | 实拍或视频，LED 1s 周期闪烁 | DONE | 2026-09-14 | DAP 烧录流水灯成功，开发板运行正常 |
 | T1.5 | USART1 + printf 重定向；DAP 烧录、打断点单步 | 1/2/5 | 串口助手收到周期字符串；能命中断点 | DONE | 2026-09-14 | 串口输出正常（助手改 UTF-8 后中文正常）、断点命中、F10 单步通过；周期上报延至 T2.4 |
@@ -135,10 +135,10 @@
 
 | ID | 任务 | 估算 | 验收/验证方式 | 状态 | 证据/完成日期 |
 |---|---|---|---|---|---|
-| T2.1 | ADC1 读电位器（PA0，轮询或 DMA 均可），换算 mV | 1/2/4 | 旋转电位器读数 0~3300mV 单调变化，串口可见 | TODO | |
-| T2.2 | DS18B20 单总线驱动（us 级延时），读温度 0.1℃。**若现有传感器是 DHT11（1℃ 分辨率，不适合温控），改用 T1.1 新买的 DS18B20** | 1.5/3/7 | 手握传感器温度上升，读数分辨率 0.1℃ | TODO | |
-| T2.3 | CRC16/MODBUS（0xA001）；`tools/` 放 PC 端对照脚本自测 | 1/2/4 | 固件与脚本对同一载荷结果一致，输出存档 | TODO | |
-| T2.4 | 组 0x01 帧（int16 温度0.1℃ + uint16 mV + 状态位），TIM 1Hz 上报 | 1/2/4 | 串口助手按帧手工解析字段正确 | TODO | |
+| T2.1 | ADC1 读电位器（PA6，中断规则采集），换算 mV | 1/2/4 | 旋转电位器读数 0~3300mV 单调变化，串口可见 | DONE | 2026-09-17 | 野火 29-2 例程跑通：串口 0V→3.3V 单调、满量程 0x0FFF；实际引脚 PA6（非 PA0），中断方式取数 |
+| T2.2 | DS18B20 单总线驱动（us 级延时），读温度 0.1℃。**若现有传感器是 DHT11（1℃ 分辨率，不适合温控），改用 T1.1 新买的 DS18B20** | 1.5/3/7 | 手握传感器温度上升，读数分辨率 0.1℃ | DONE | 2026-10-02 | 野火无现成例程，自写单总线驱动（DQ=PA7，DWT us 延时，0xCC/0x44/0xBE 时序）；串口室温 30.69℃，手捏升至 33.06℃ 后回落，0.0625℃ 分辨率可见 |
+| T2.3 | CRC16/MODBUS（0xA001）；`tools/` 放 PC 端对照脚本自测 | 1/2/4 | 固件与脚本对同一载荷结果一致，输出存档 | DONE | 2026-10-06 | C# 端（tools/Crc16ModbusTest）与 C 端固件均通过 `"123456789"`→0x4B37；对真实帧载荷 `06 01 00 01 77 03 01` 两端均得 0x070C，CRC 覆盖范围=LEN+CMD+载荷共7字节 |
+| T2.4 | 组 0x01 帧（int16 温度0.1℃ + uint16 mV + 状态位），TIM 1Hz 上报 | 1/2/4 | 串口助手按帧手工解析字段正确 | DONE | 2026-10-06 | 帧结构 `AA 55 | LEN | CMD | temp(int16) | mV(uint16) | status | CRC16`，11字节/帧；实测温度25.6℃、mV随电位器变化、1Hz严格上报；CRC低字节在前；Temperature_Task非阻塞组帧，DS18B20拆为StartConvert/ReadResult |
 | T2.5 | 10 分钟定帧稳定性测试 | 0.3/0.5/1 | 日志/截图：无乱码、无丢帧 | TODO | |
 
 **M1 验收**：10 分钟连续定帧，帧帧 CRC 通过。
@@ -147,10 +147,10 @@
 
 | ID | 任务 | 估算 | 验收/验证方式 | 状态 | 证据/完成日期 |
 |---|---|---|---|---|---|
-| T3.1 | `docs/protocol/PROTOCOL.md` v0.9：帧格式、CMD 表、定点数约定、字节序 | 1/2/3 | 文档存在，含帧示例 hex | TODO | |
-| T3.2 | 新增 `MetalMonitor.core/Services/ISerialService.cs`、`SerialService.cs`：端口枚举/开关/收数事件，模式仿照现有 IMqttService | 2/3/6 | `dotnet build` 通过；接口含连接状态事件 | TODO | |
-| T3.3 | FrameParser 状态机（帧头 AA 55→LEN→载荷→CRC16），坏帧计数；在 `MetalMonitor.Tests` 加单测（正常帧/半帧/粘包/坏 CRC） | 2/4/8 | `dotnet test` 全绿；边界用例覆盖 | TODO | |
-| T3.4 | DeviceService 接入「串口」数据源（现有 `AvailableDataSources` 已预留占位），映射到设备与指标管线 | 2/3/6 | 真实帧进入卡片/曲线，数据源指示"串口" | TODO | |
+| T3.1 | `docs/protocol/PROTOCOL.md` v0.9：帧格式、CMD 表、定点数约定、字节序 | 1/2/3 | 文档存在，含帧示例 hex | DONE | 2026-10-06 文档已成稿；2026-10-10 对照验收标准逐条核对通过，状态回写 |
+| T3.2 | 新增 `MetalMonitor.core/Services/ISerialService.cs`、`SerialService.cs`：端口枚举/开关/收数事件，模式仿照现有 IMqttService | 2/3/6 | `dotnet build` 通过；接口含连接状态事件 | DONE | 2026-10-10 | ISerialService.cs + SerialService.cs 新增；dotnet build 0 错误；接口含 DataReceived + ConnectionStateChanged 事件；SerialPort 115200 8N1 配置来自 PROTOCOL.md v0.9；仅收原始字节不做帧解析 |
+| T3.3 | FrameParser 状态机（帧头 AA 55→LEN→载荷→CRC16），坏帧计数；在 `MetalMonitor.Tests` 加单测（正常帧/半帧/粘包/坏 CRC） | 2/4/8 | `dotnet test` 全绿；边界用例覆盖 | DONE | 2026-10-12（2026-10-14 收口） | FrameParser.cs + SensorDataFrame 新增；128 字节环形缓冲区（long 计数器无空/满歧义）；枚举状态机（WaitingHead→ReadingCrc）；坏帧跳过字节重找帧头；10 个测试用例（正常/半帧/粘包/坏CRC/帧头错位/坏帧恢复 + 边界4：LEN 超上限/LEN=0/假 LEN 恰为真帧头 0xAA/超大 LEN+垃圾不越界）；2026-10-14 修复 LEN 字段双侧校验漏洞（MinLen=1，MaxLen=32-5=27），非法 LEN 时 BadFrameCount++ 并回退 `_totalRead` 重扫；dotnet test 58/58 通过 |
+| T3.4 | DeviceService 接入「串口」数据源 + NODE_ID 跨端改帧（PROTOCOL v0.9 修订2：12 字节帧、CRC 含地址、LEN≤26；固件组帧/FrameParser/全部单测向量同步）+ D1 抽 `enum DataSource` + config.json 启动只读路由表 | 2/4/8 | `dotnet test` 全绿（新帧向量重算）；真实帧进入卡片/曲线，数据源指示"串口"；未知 NODE_ID 计数丢弃不崩溃 | DONE | 2026-10-19 | firmware/stm32_f103_metalmonitor/App/temperature/app_temperature.c | 第①步固件组帧完成：新增 `#define DEVICE_NODE_ID 0x00`、帧 11→12 字节、CRC 覆盖 `&frame[2]` 由 7→8 字节、发送循环 11→12；Keil UV4 命令行自**新路径** Rebuild 0 Error 0 Warning（Code=8012B/RO=268/RW=52/ZI=3148）；PC 对照脚本新向量 0xF82E 与 PROTOCOL §7 示例一致；第②步 PC 解析器同步完成：FrameParser 升 12 字节（新增 ReadingNodeId 状态、MaxLen=26、SensorDataFrame.NodeId 属性），复查修复 3 处缺陷（WaitingHead2 转移未重接 / LEN 误写 [2] / NODE_ID 误读 [3]，见 error_fix_log #33），10 个旧用例向量重算 + 新增 NODE_ID=0x2A 提取用例（CRC 0x9FAC），dotnet test 59/59；烧录实测延至收口一次做；第③步 D1 抽枚举完成：新增 `MetalMonitor.core/DataSource.cs`（enum DataSource: Simulation/Mqtt/Serial + 显示名映射单一事实源，字符串只留在 config/UI 两个边界），DeviceService 内部全枚举化（DataSourceKind 别名规避属性名遮蔽，见 error_fix_log #34），新增 9 个映射单测，dotnet test 68/68；第④步完成：config.json 新增 Serial 段（PortName 端口持久化 + NodeRouting 十六进制键→设备名路由表），ConfigService 加 SerialPortName 写穿属性与 GetNodeRoutingSnapshot() 启动只读快照（程序内无写入通道，非法键静默忽略），向后兼容无 Serial 段的旧配置，新增 4 个配置单测，dotnet test 72/72；第⑤步 DeviceService 接线完成：按用户决策落地"接入事件驱动 + 派发节拍驱动"混合模型——接入线程（串口/MQTT）只写线程安全暂存区（同键 latest-wins）+ 追加落库缓冲，心跳 `ApplyPendingSamples` 排空执行全项目唯一一套"业务三步"；MQTT 通路对齐重构；新增串口通路 `OnSerialRawData`/`OnFrameParsed`（NODE_ID 路由 + IsActive 检查）；新增 `MetalMonitor.core/FrameRouter.cs`（`RouteOutcome` 四态）与 `UnknownNodeCount`/`UnroutedDeviceCount` 两类未命中计数；DI 注册 `ISerialService`+`FrameParser`，DeviceService 增设 5 参构造函数；`SetDataSourceAsync` 串口分支真实连接并回写端口；双轨落库（接入层追加原始样本保真 + 心跳派发最新值给 UI）；新增 FrameRouterTests 7 例，既有 MQTT 缓冲用例按新语义补一拍心跳（见 error_fix_log #36），dotnet test 79/79；D3 技术债（热路径按名 O(n) 查找）按用户决策随本任务一并处理：`_metricConfigsByName` 供 `GetMetricUnit`、`_devicesByName` 按名索引供 `UpdateDeviceFromMqtt`，索引在唯一结构变更点 `SyncDevicesFromDatabaseAsync` 锁内整体重建（覆盖改名）；新增改名回归用例并以"摘掉重建必红"验证判别力，dotnet test 80/80、build 0 错 0 告警。**2026-10-19 真机烧录实测通过，T3.4 置 DONE**：串口助手 HEX 模式抓到 1Hz 12 字节帧（`AA 55 00 06 01 ..`；首行固件 printf 启动文本属噪声，验证解析器跳噪声设计），7 组 CRC 验算全 PASS（"123456789"→0x4B37 算法锚点 + 黄金向量 0xF82E + 5 组实机载荷）；上位机"串口"数据源（config.json 持久化 COM6）下首卡"一号冲压机"温度 30.6℃ / 电压 ~3.30V 真实跳动（电压 ±2mV 为 12 位 ADC 正常量化噪声；手捂 DS18B20 温度单调爬升呈热惯性曲线，排除噪音疑虑）；用户将 DEVICE_NODE_ID 改 0x2A 重烧（全程未关上位机）：卡片停更、程序不崩溃（帧按 UnknownNode 计数丢弃），改回 0x00 后数据自动恢复——三条验收标准全达成，M2-a 完成 |
 
 **M2-a 验收**：真实数据在 UI 曲线显示；解析单测全绿。
 
@@ -158,7 +158,7 @@
 
 | ID | 任务 | 估算 | 验收/验证方式 | 状态 | 证据/完成日期 |
 |---|---|---|---|---|---|
-| T4.1 | 断线检测 + 5s 自动重连 + 重连状态 UI 提示 | 1/2.5/5 | 当场拔插 3 次均在 5s 内恢复，截图/视频 | TODO | |
+| T4.1 | 断线检测（读异常 + 3 秒无有效帧应用层看门狗）+ 指数退避自动重连（1→2→4→8→30s；串口按 VID/PID 重新定位 COM 口，MQTT 重连后重新订阅）+ 连接三态 UI 提示（Connected/Connecting/Disconnected）。**断线语义统一：停数据、不回退模拟数据**（模拟数据仅在用户主动选择时生成）；顺利则 MQTT 侧重连一并完成，质量码枚举（Good/Stale/Bad + LastFrameUtc）随本任务引入 | 1/2.5/5 | 当场拔插 3 次均在 5s 内恢复，截图/视频；断线时 UI 显式"通讯中断"且曲线停更 | TODO | |
 | T4.2 | 串口数据经 SQLite 批量落库、报警阈值判断全链路验证 | 1/2/4 | 历史查询可见真实数据；超限卡片变红 | TODO | |
 | T4.3 | 10 分钟收发零崩溃；W4 闸门评审（对照 A6 决定是否降级） | 0.5/1/2 | 评审结论写入 §C2 当周记录 | TODO | |
 
@@ -205,12 +205,36 @@
 | ID | 任务 | 估算 | 验收/验证方式 | 状态 | 证据/完成日期 |
 |---|---|---|---|---|---|
 | T8.1 | B1 串口→MQTT 桥（复用现有 MqttService，性价比最高） | 0.5/1/2 | 串口数据可在 MQTT 订阅端收到 | TODO | |
+| T8.5 | **Modbus 方案 A（2026-10-14 新增）**：PC 端 Modbus TCP 服务器（FluentModbus，502 端口），把网关统一设备模型映射为寄存器表（40001 温度×10 / 40002 电压 mV / 40003 状态；40010 目标温度、40011 加热模式可写 → 落 T5.x 同一命令 handler） | 0.5/1/2 | Modbus Poll（localhost:502）读到 STM32 真实数据；写 40010 后 MCU 目标温度生效 | TODO | |
+| T8.6 | **W5500 以太网最小闭环（2026-10-14 新增）**：STM32 走 SPI2（PB12=CS/PB13=SCK/PB14=MISO/PB15=MOSI，避开 PA6 ADC 与 PA7 DS18B20）驱动 W5500 硬件协议栈（ioLibrary 官方库），socket TCP 服务器把 AA55 帧原样发出；PC 端加 TCP 客户端适配器喂**现有 FrameParser**（帧格式零改动，物理验证"传输无关"） | 1/2/4 | 网线直连 PC（静态 IP，无需路由器），TCP 适配器收帧点亮卡片/曲线，与串口同帧同解析器；面试叙事"同一解析器跑串口+以太网"成立 | TODO | |
 | T8.2 | 三选（有余力多选）：OLED 状态显示 / IWDG 看门狗 / 目标温度写入 W25Q64（SPI 外部 Flash，套件自带）；再有余力：EC11 编码器做本地温度旋钮、SG90 舵机映射 PID 输出做"阀门开度"物理指示 | 1/3/6 | 屏幕显示 / 死循环被复位 / 掉电参数保留，任一 DONE | TODO | |
 | T8.3 | 视频终版 + GitHub Release（视频以 Release 附件/外链存放，不入 git） | 1/2/4 | Release 页面可访问 | TODO | |
 | T8.4 | 总复盘：指标汇总、简历素材（数据/截图/一句话项目描述） | 1/2/3 | 写入 §C4 上方总复盘段 | TODO | |
 
-**明确不做（防膨胀）**：FreeRTOS、WiFi 直连、RS485 多机、自制 PCB、触摸屏/LVGL、Bootloader、手机端、传感器堆料超过两通道、上位机重构。
-**B5 Modbus RTU**：仅在 W7 前进度超前 ≥5 天时启动，否则永久砍除。（PID 已升为 W6 主线，不再是加分项）
+**明确不做（防膨胀）**：FreeRTOS、WiFi 直连、RS485 多机总线挂多台设备（单从站 TTL/MAX485 演示除外，见 T9.3）、自制 PCB、触摸屏/LVGL、Bootloader、手机端、传感器堆料超过两通道、上位机重构、OPC UA 实现（列项目后学习目标，不入计划）。
+**Modbus（2026-10-14 变更，废止原 B5 触发条件）**：分 A/B/C 三方案——A（PC Modbus TCP 服务器）入 W8 T8.5；B（PC Modbus RTU 主站）+ C（STM32 USART2 RTU 从站）入 W9~W10 扩展期。OPC UA 移出计划，仅在 README 演进项说明。
+**以太网（2026-10-14 二次决策）**：W5500 最小闭环入 W8 T8.6（求职权重上调，socket 知识可迁移 + JD 关键词命中）；退场条件见 PROJECT_CONTEXT 决策表——SPI 自检 2 天不通→搁置、ioLibrary 移植超 2 天→降级裸 socket echo、挤压 M5→无条件砍；"明确不做"中 **WiFi 直连维持不变**（ESP-01 仅留方向）。MQTT on MCU / Modbus TCP 从站列项目后（W5500 之后的纯增量）。
+
+### W9~W10（11/08 ~ 11/21）扩展期：Modbus 双端 + 真 485（2026-10-14 基线变更启用）
+
+> 启用前置：M5（v1.0 tag + README + 演示视频）已达成。就业导向：潮汕地区嵌入式/设备厂岗位多于上位机岗，三方案分别对应"控制器厂嵌入式（C）/集成商上位机读 PLC 仪表（B）/平台型网关（A+T8.1）"三类雇主。架构原则：**AA55 协议在 USART1 冻结不动，Modbus 是 USART2 上的并行第二条腿**，共享同一应用层（通信端口抽象）；写寄存器与 AA55 下行命令落同一 handler。
+
+| ID | 任务 | 估算 | 验收/验证方式 | 状态 | 证据/完成日期 |
+|---|---|---|---|---|---|
+| T9.1 | STM32 USART2（PA2/PA3）Modbus RTU 从站：IDLE 空闲中断 + DMA 静默分帧（>19200 波特固定 1.75ms 帧间隔）、寄存器映射、功能码 0x03/0x04/0x06/0x10；与 USART1 AA55 双协议并行；固件 `#define DEVICE_NODE_ID`（多节点扩展走 W25Q64） | 1.5/3/5 | PC 主站轮询温度/电压寄存器正确；写目标温度/模式与 AA55 下行等效 | TODO | |
+| T9.2 | PC 端 Modbus RTU 主站（第二串口，FluentModbus）：轮询自有 STM32 USART2 从站并纳入网关统一设备模型（南向②）；零硬件自测路径：com0com 虚拟串口对 + FluentModbus RTU 从站 | 1/2/4 | RTU 通道数据进卡片/曲线/落库，与 AA55 通道并存 | TODO | |
+| T9.3 | （可选）MAX485 模块（¥3~8）真差分总线：DE/RE 发送方向控制（末字节发完立即释放总线） | 0.5/1/2 | 485 链路轮询稳定，无数据冲突 | TODO | |
+
+**退场/降级条件**：①W6 PID 未收敛 → T9.1 降为仅 0x03/0x04 只读最小从站，砍 0x06/0x10；②USART2 IDLE+DMA 分帧 2 天调不通 → 降级为编译期双 Profile（同时刻只跑一种协议）；③FluentModbus 最小 demo 半天跑不通 → Modbus 整体砍除仅留学习文档；④TTL 直连即可完成 C/B 演示，MAX485 永久可选。
+
+---
+
+### 完善阶段（待排期，未编号 · 2026-10-14 登记）
+
+> **仅登记，不排期**：抵达本阶段后再展开任务明细与周次编号。范围 = **系统错误可见化**（一处收集、多处呈现）。
+> **设计决议（用户拍板）**：① 徽标数字 = **当前活跃故障源数**；② 弹窗仅在**原本留空的 try-catch 需要报错**时触发，且**同源同类型每会话只提示一次**；③ **内存态、不持久化**，重启后新错误重新提示；④ 错误中心**仅做查看与展示**，与设备业务报警（`AlarmLogs`）**分离**——前者类比 IDE 对代码逻辑的报错，后者是设备传上来的数据报警。
+> **待改造对象**：现有 8 处静默 `catch`（清单见 `PROJECT_CONTEXT.md §P4`；关联 `error_fix_log.md` #3b / #5，fail-silent 累计第 3 次）。其中 `RollingFileLogger` 的静默属**故意保留**。
+> **退场条件**：① 替换 catch 出现原功能回归 → 回滚该处，只保留中枢 + 全局兜底；② 错误中心页 UI 超预算 → 砍页面与徽标，保留基础层（全链路错误可见才是真价值）；③ 内存态若被证明影响排障 → 再引入落盘。
 
 ---
 
@@ -227,6 +251,40 @@
 ```
 
 <!-- 按日期倒序在此追加 -->
+
+## 2026-10-06 (C档) 实际 ~4h
+- 完成: T2.3 关闭 + T2.4 DONE。新增 User/crc16/bsp_crc16.c（逐位反射版，0xA001，4B37 验证通过）；Temperature_Task 内组 11 字节二进制帧（AA 55 + LEN6 + CMD01 + int16温度×10 + uint16 mV + 状态位 + CRC16低字节在前），USARTX_SendByte 逐字节 1Hz 上报；两端对真实载荷 `06 01 00 01 77 03 01` 均算得 0x070C
+- 质量: 4/5  [证据: 串口 HEX 帧 `AA 55 06 01 00 01 77 03 01 0C 07`；C# 工具 PASS]
+- 坑: CRC 覆盖范围初次写 len=6 漏算状态位（应为 LEN+CMD+5字节载荷=7），导致两端结果不一致；改为 len=7 后对齐。字节序易错点：帧内多字节字段与 CRC 均低字节在前
+- 明日首动作: T2.5（10分钟定帧稳定性，合并进 W4 T4.3 一起测）→ T3.1 写 docs/protocol/PROTOCOL.md v0.9（帧格式/CRC范围/字节序落字）→ T3.2 SerialService
+
+## 2026-10-04 (C档) 实际 ~3h
+- 完成: DS18B20 驱动非阻塞重构（T2.4 前置）：GetTemp 拆为 StartConvert(0x44)/ReadResult(0xBE)；新建 app_temperature.c/.h，cycle/timer/flag 三件套照搬 app_potentiometer；SysTick_Handler 加温度倒计时；实测严格 1Hz 连续输出，热平衡 31.56℃ 正常
+- 质量: 4/5  [证据: 串口 1 秒一行温度曲线；error_fix_log #27 #28]
+- 坑: ①AI 误判 Delay_us 存在 /8 时钟错误，读 bsp_systick.c L40 后销案（SysTick_Config 默认 HCLK 72MHz）；②L6218E temperature_task——变量定义 Temperature_task 与 extern 声明大小写不一致
+- 明日首动作: T2.4 正式开工：Temperature_Task 内组 0x01 二进制帧（帧头+温度 int16 定点+CRC16 C 端），1Hz 上报；与 tools/ C# 脚本对同一载荷比对，关闭 T2.3
+
+## 2026-10-02 (C档) 实际 ~2.5h
+- 完成: T2.2 DS18B20 驱动 DONE（自写单总线 bsp_ds18b20.c/.h，DQ=PA7；室温 30.69℃→手捏 33.06℃→回落，0.0625℃ 分辨率）
+- 质量: 4/5  [证据: 串口温度曲线输出；error_fix_log #25]
+- 坑: L6218E Delay_ms 未定义（真名 SysTick_DelayMs，F12 核对 bsp_systick.h 解决）；启动行中文 printf 乱码（复位垃圾字节/GBK 编码，改英文规避）
+- 明日首动作: T2.4 组 0x01 帧 + CRC16 C 端实现（T2.3 固件侧并入），1Hz 上报；串口助手手工解析验收
+
+## 2026-10-01 (C档) 实际 ~2h
+- 完成: T2.3 C# 端（tools/Crc16ModbusTest，"123456789"→0x4B37 PASS，空数据→0xFFFF）
+- 质量: 4/5  [证据: dotnet run 控制台输出；error_fix_log #24]
+- 坑: 顶级语句与显式 Main 冲突致程序空跑（CS7022/CS8321），已修复并记录
+- 明日首动作: T2.2 DS18B20 驱动（改野火例程，DQ 引脚定 PA7）
+
+## 2026-09-20 ~ 09-26 (W2) 缺数据
+- 缺数据：W2 全周无有效产出记录（T2.1 已于 09-17 提前完成，后续未推进）
+- 质量: 缺数据
+- 明日首动作: T2.3 CRC16 C# 脚本
+
+## 2026-09-27 ~ 09-30 (W3前半) 缺数据
+- 缺数据：09-27~09-30 无有效产出记录
+- 质量: 缺数据
+- 明日首动作: T2.3 CRC16 C# 脚本（0x4B37 验证）
 
 ### C2 周指标表
 
@@ -252,5 +310,9 @@
 | 日期 | 类型（基线/协议/范围） | 变更内容 | 原因与数据依据 |
 |---|---|---|---|
 | 2026-09-13 | 基线 | 计划书创建，8 周计划起始 | — |
+| 2026-09-30 | 基线评估 | 落后 12 天（W2~W3前半无产出），暂不延至 10 周；国庆 8 天为追赶窗口。压缩：T2.5 砍（并入 T4.3）、T3.1 压缩至 1h、T3.3 单测砍至 2 用例（半帧/粘包移 T7.1）。若 10/10 W4 闸门 M2 未达成 → 执行 A6 降级 + 延至 10 周 | 09-20~09-30 无有效产出；A7 规则漏记不回填，标缺数据；追赶靠砍任务不靠堆时长 |
+| 2026-10-14 | 协议 | PROTOCOL v0.9 修订2：帧头与 LEN 间新增 NODE_ID（11→12 字节，CRC 覆盖 8 字节含地址，LEN 上限→26）；固件/FrameParser/单测随 T3.4 同步；SEQ 留 T5.1 | 多节点扩展前置；NODE_ID 纳入 CRC 防地址翻转误路由；"字段先冻结语义后启用" |
+| 2026-10-14 | 范围 | 登记**完善阶段（待排期）：系统错误可见化**——Core 错误中枢 + 三出口（徽标=当前活跃故障源数 / 错误中心页=仅查看展示 / 弹窗=同源同类型每会话一次，内存态不持久化）；8 处静默 `catch` 逐个定级改造。**不占现有周次、不插队**，抵达完善阶段再展开任务明细（清单与决议见 PROJECT_CONTEXT §P4、error_fix_log #5 关联复核第 3 次） | 用户审计发现多处 `try-catch` 静默吞异常（fail-silent）；该类问题在 error_fix_log 已累计 3 次（#3b 启动失败静默存活 / #5 静默回退模拟数据 / 本次）；系统故障与设备业务报警语义不同需分离 |
+| 2026-10-14 | 范围 | ①启用 W9~W10 扩展期（原 10 周预案落地）：A=PC Modbus TCP 服务器入 T8.5，B=PC RTU 主站、C=STM32 USART2 RTU 从站入 T9.1~T9.3（TTL 先行，MAX485 可选）；②OPC UA 移出计划列项目后学习目标；③断线语义统一为"停数据+三态提示"，废止"断线回退模拟数据"，质量码随 T4.1 引入；④D1 抽枚举随 T3.4 | 就业目标：潮汕地区嵌入式岗多于上位机岗，"STM32+WPF+Modbus 网关"复合技能覆盖三类雇主；F103 有 3 个 UART，USART2 并行消除协议冲突；断线回退模拟属"失效未检出"，工业大忌。退场条件见 W9~W10 表 |
 
 <!-- 总复盘写在这里（T8.4） -->

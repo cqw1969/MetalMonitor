@@ -13,24 +13,49 @@ using System.Windows;
 
 namespace MetalMonitor.UI.ViewModels
 {
+    /// <summary>
+    /// 单台设备的卡片视图模型：订阅所属 <see cref="Device"/> 的属性与指标值变更事件，
+    /// 维护按指标分别存储的历史曲线点与报警散点（LiveCharts），驱动卡片数值、报警变红、
+    /// 停用置灰与暂停遮罩等显示状态；释放时须退订设备事件。
+    /// </summary>
     public class DeviceCardViewModel : INotifyPropertyChanged, IDisposable
     {
+        /// <summary>本卡片绑定的设备领域对象。</summary>
         public Device Device { get; }
+        /// <summary>设备数据服务，用于读取指标配置与历史点保留上限。</summary>
         private readonly IDeviceService _deviceService;
 
+        /// <summary>卡片当前展示的指标名称，由主界面下拉框统一切换，默认 Temperature。</summary>
         private string _metricName = "Temperature";
 
+        /// <summary>每个指标独立的历史曲线点集合（按指标名索引）。</summary>
         // 每个指标独立的历史点/报警点集合
         private readonly Dictionary<string, ObservableCollection<ObservablePoint>> _pointsByMetric = new();
+        /// <summary>每个指标独立的报警散点集合（按指标名索引）。</summary>
         private readonly Dictionary<string, ObservableCollection<ObservablePoint>> _alarmPointsByMetric = new();
 
+        /// <summary>当前绑定到图表的历史曲线系列实例。</summary>
         private LineSeries<ObservablePoint> _lineSeries;
+        /// <summary>当前绑定到图表的报警散点系列实例。</summary>
         private ScatterSeries<ObservablePoint> _alarmSeries;
 
+        /// <summary>图表系列数组（曲线 + 报警散点），切换指标时整体替换。</summary>
         public ISeries[] Series { get; private set; }
+        /// <summary>图表 X 轴配置（卡片上隐藏不显示）。</summary>
         public Axis[] XAxes { get; set; }
+        /// <summary>图表 Y 轴配置（范围随指标最值刷新，卡片上隐藏不显示）。</summary>
         public Axis[] YAxes { get; set; }
 
+        /// <summary>
+        /// 初始化 <see cref="DeviceCardViewModel"/> 的新实例：订阅设备事件、创建曲线与报警系列、
+        /// 初始化坐标轴并按当前指标刷新卡片显示。
+        /// </summary>
+        /// <param name="device">卡片对应的设备。</param>
+        /// <param name="deviceService">设备数据服务。</param>
+        /// <remarks>
+        /// 构造时订阅 <see cref="Device.MetricValueChanged"/> 与 <see cref="Device.PropertyChanged"/>，
+        /// 必须在 <see cref="Dispose(bool)"/> 中对应退订以避免事件泄漏。
+        /// </remarks>
         public DeviceCardViewModel(Device device, IDeviceService deviceService)
         {
             Device = device;
@@ -64,6 +89,10 @@ namespace MetalMonitor.UI.ViewModels
             RefreshMetricDisplay();
         }
 
+        /// <summary>
+        /// 创建绿色半透明填充的历史折线系列。
+        /// </summary>
+        /// <returns>配置好的 <see cref="LineSeries{ObservablePoint}"/> 新实例。</returns>
         private LineSeries<ObservablePoint> CreateLineSeries() => new()
         {
             Fill = new SolidColorPaint(new SKColor(108, 212, 108, 80)),
@@ -72,6 +101,10 @@ namespace MetalMonitor.UI.ViewModels
             LineSmoothness = 0.4
         };
 
+        /// <summary>
+        /// 创建红色的报警散点系列。
+        /// </summary>
+        /// <returns>配置好的 <see cref="ScatterSeries{ObservablePoint}"/> 新实例。</returns>
         private ScatterSeries<ObservablePoint> CreateAlarmSeries() => new()
         {
             GeometrySize = 5,
@@ -79,6 +112,9 @@ namespace MetalMonitor.UI.ViewModels
             Stroke = new SolidColorPaint(SKColors.Red) { StrokeThickness = 1 }
         };
 
+        /// <summary>
+        /// 获取或设置当前卡片展示的指标名（由主界面下拉框切换）；变更后重建图表显示。
+        /// </summary>
         // 当前卡片展示的指标名（由主界面下拉框切换）
         public string MetricName
         {
@@ -92,22 +128,31 @@ namespace MetalMonitor.UI.ViewModels
             }
         }
 
+        /// <summary>获取当前指标对应的配置；配置不存在时为 null。</summary>
         private MetricConfig? CurrentConfig =>
             _deviceService.GetMetricConfigs().FirstOrDefault(c => c.Name == _metricName);
 
+        /// <summary>获取当前指标的显示名称；无配置时回退为指标名本身。</summary>
         public string MetricDisplayName => CurrentConfig?.DisplayName ?? _metricName;
 
+        /// <summary>获取当前指标的单位文本；无配置时为空字符串。</summary>
         public string CurrentUnit => CurrentConfig?.Unit ?? string.Empty;
 
+        /// <summary>获取当前指标是否启用（停用后卡片置灰）。</summary>
         // 指标是否启用（停用后卡片置灰）
         public bool IsMetricActive => CurrentConfig?.IsActive ?? false;
 
+        /// <summary>获取设备是否处于暂停/停止状态（<see cref="Device.IsActive"/> 为 false），暂停时卡片整体灰化并显示“暂停中”。</summary>
         // 设备是否处于暂停/停止状态（IsActive=false），暂停时卡片整体灰化并显示"暂停中"
         public bool IsPaused => !Device.IsActive;
 
+        /// <summary>获取当前指标是否处于报警状态（驱动卡片红色报警样式）。</summary>
         // 当前指标是否处于报警状态
         public bool IsMetricAlarming => Device.IsMetricAlarming(_metricName);
 
+        /// <summary>
+        /// 获取数值显示文本：指标停用或无数值（NaN）时显示“--”，否则保留一位小数。
+        /// </summary>
         // 数值显示文本：停用无数值时显示 "--"
         public string ValueText
         {
@@ -119,6 +164,11 @@ namespace MetalMonitor.UI.ViewModels
             }
         }
 
+        /// <summary>
+        /// 切换/刷新当前指标的图表显示：重建曲线与报警系列实例并绑定当前指标的数据点，
+        /// 刷新坐标范围、颜色与各绑定属性。
+        /// </summary>
+        /// <remarks>重建系列实例可避免复用旧 <see cref="ScatterSeries{ObservablePoint}"/> 导致上一指标的红色报警点残留。</remarks>
         // 切换指标：重建系列实例并绑定当前指标的数据点，
         // 避免复用旧 ScatterSeries 导致上一指标的红色报警点残留
         public void RefreshMetricDisplay()
@@ -140,6 +190,10 @@ namespace MetalMonitor.UI.ViewModels
             OnPropertyChanged(nameof(ValueText));
         }
 
+        /// <summary>
+        /// 按当前指标配置刷新卡片 Y 轴上下限、曲线颜色及数值/报警/启用绑定状态。
+        /// </summary>
+        /// <remarks>指标配置可能在系统设置中被修改，每秒由主界面定时器调用刷新。</remarks>
         // 配置可能在系统设置中被修改，每秒由主界面调用刷新
         public void ApplyMetricLimits()
         {
@@ -155,6 +209,9 @@ namespace MetalMonitor.UI.ViewModels
             OnPropertyChanged(nameof(IsMetricAlarming));
         }
 
+        /// <summary>
+        /// 按当前指标启用状态应用曲线配色：启用为绿色曲线，停用为灰色曲线。
+        /// </summary>
         // 启用=绿色曲线；停用=灰色曲线
         private void ApplyChartColors()
         {
@@ -170,6 +227,11 @@ namespace MetalMonitor.UI.ViewModels
             }
         }
 
+        /// <summary>
+        /// 获取指定指标的历史曲线点集合，不存在时按需创建并缓存。
+        /// </summary>
+        /// <param name="metric">指标名称。</param>
+        /// <returns>该指标对应的历史曲线点集合。</returns>
         private ObservableCollection<ObservablePoint> GetPoints(string metric)
         {
             if (!_pointsByMetric.TryGetValue(metric, out var col))
@@ -180,6 +242,11 @@ namespace MetalMonitor.UI.ViewModels
             return col;
         }
 
+        /// <summary>
+        /// 获取指定指标的报警散点集合，不存在时按需创建并缓存。
+        /// </summary>
+        /// <param name="metric">指标名称。</param>
+        /// <returns>该指标对应的报警散点集合。</returns>
         private ObservableCollection<ObservablePoint> GetAlarmPoints(string metric)
         {
             if (!_alarmPointsByMetric.TryGetValue(metric, out var col))
@@ -190,6 +257,12 @@ namespace MetalMonitor.UI.ViewModels
             return col;
         }
 
+        /// <summary>
+        /// 向指定指标追加一个历史点；若该值处于报警状态则同步追加报警散点，
+        /// 并在点数超过服务端配置上限时滚动移除最旧数据、重排 X 坐标。
+        /// </summary>
+        /// <param name="metricName">指标名称。</param>
+        /// <param name="value">本次指标值。</param>
         private void AddMetricPoint(string metricName, double value)
         {
             var points = GetPoints(metricName);
@@ -216,6 +289,15 @@ namespace MetalMonitor.UI.ViewModels
             }
         }
 
+        /// <summary>
+        /// 设备指标值更新事件处理：追加历史点并在该指标为当前展示指标时刷新数值与报警状态。
+        /// </summary>
+        /// <param name="metricName">更新值的指标名称。</param>
+        /// <param name="value">最新指标值。</param>
+        /// <remarks>
+        /// 该事件由定时器所在的后台线程触发，非 UI 线程时通过 Dispatcher 异步封送回 UI 线程执行，
+        /// 保证 LiveCharts 集合与绑定属性只在 UI 线程更新。
+        /// </remarks>
         // 设备指标值更新（定时器线程触发，需切回 UI 线程）
         private void OnMetricValueChanged(string metricName, double value)
         {
@@ -235,6 +317,12 @@ namespace MetalMonitor.UI.ViewModels
             }
         }
 
+        /// <summary>
+        /// 设备通用属性变更处理：报警总状态变化时刷新报警属性，启用状态变化时刷新暂停遮罩属性。
+        /// </summary>
+        /// <param name="sender">事件发送者（设备对象），可能为 null。</param>
+        /// <param name="e">属性变更事件参数，<see cref="PropertyChangedEventArgs.PropertyName"/> 标识变更属性。</param>
+        /// <remarks>事件可能来自后台线程，通知统一通过 Dispatcher 封送回 UI 线程。</remarks>
         private void OnDevicePropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
             if (e.PropertyName == nameof(Device.IsAlarming))
@@ -248,8 +336,13 @@ namespace MetalMonitor.UI.ViewModels
             }
         }
 
+        /// <summary>属性变更通知事件，供 WPF 绑定系统订阅。</summary>
         public event PropertyChangedEventHandler? PropertyChanged;
 
+        /// <summary>
+        /// 触发 <see cref="PropertyChanged"/> 事件；属性名缺省时由调用方成员名自动填充。
+        /// </summary>
+        /// <param name="propertyName">发生变更的属性名称，null 时由 <see cref="CallerMemberNameAttribute"/> 自动传入。</param>
         protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
@@ -257,14 +350,20 @@ namespace MetalMonitor.UI.ViewModels
 
         #region IDisposable
 
+        /// <summary>释放标记：true 表示已执行过释放逻辑，防止重复释放。</summary>
         private bool _disposed = false;
 
+        /// <summary>释放本视图模型：退订设备的指标值与属性变更事件，避免事件引用导致卡片无法回收。</summary>
         public void Dispose()
         {
             Dispose(true);
             GC.SuppressFinalize(this);
         }
 
+        /// <summary>
+        /// 受保护的释放实现：保证释放幂等，显式释放时退订两个设备事件。
+        /// </summary>
+        /// <param name="disposing">true 表示由 <see cref="Dispose"/> 显式调用；false 表示由终结器调用。</param>
         protected virtual void Dispose(bool disposing)
         {
             if (_disposed) return;
@@ -278,6 +377,7 @@ namespace MetalMonitor.UI.ViewModels
             _disposed = true;
         }
 
+        /// <summary>终结器：未显式释放时以 disposing=false 兜底（退订逻辑仅在显式释放路径执行）。</summary>
         ~DeviceCardViewModel()
         {
             Dispose(false);
