@@ -15,7 +15,7 @@ namespace MetalMonitor.Core
     {
         /// <summary>SQLite 数据库文件（metalmonitor.db）的完整路径，支持运行时切换。</summary>
         private string _databasePath;
-        /// <summary>本服务自建的配置访问入口，用于读取/持久化数据库目录设置。</summary>
+        /// <summary>配置访问入口（DI 单例注入，与 DeviceService 共享同一实例），用于读取/持久化数据库目录设置。</summary>
         private readonly ConfigService _configService;
 
         /// <summary>获取当前 SQLite 数据库文件的完整路径。</summary>
@@ -25,9 +25,10 @@ namespace MetalMonitor.Core
         /// 按 config.json 中配置的目录初始化数据库路径；
         /// 配置为空时回退到 %AppData%/MetalMonitor/metalmonitor.db 并确保目录存在。
         /// </summary>
-        public DatabaseService()
+        /// <param name="configService">配置服务（DI 单例注入，与 DeviceService 共享同一实例）。</param>
+        public DatabaseService(ConfigService configService)
         {
-            _configService = new ConfigService();
+            _configService = configService;
 
             if (!string.IsNullOrEmpty(_configService.DatabasePath))
             {

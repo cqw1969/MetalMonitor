@@ -15,6 +15,15 @@ namespace MetalMonitor.Core
         /// <summary>可供 UI 下拉选择的全部数据源名称</summary>
         string[] AvailableDataSources { get; }
 
+        /// <summary>当前数据源的运行状态（正常/故障/不可用）；用户所选数据源本身不因故障改变</summary>
+        DataSourceState State { get; }
+
+        /// <summary>最近一次数据源故障的原因说明；状态正常时为 null</summary>
+        string? LastDataSourceError { get; }
+
+        /// <summary>数据源状态变更通知：切换完成即触发（成功与失败都会），UI 据此提示或调整选项可用性</summary>
+        event EventHandler<DataSourceStateChangedEventArgs>? DataSourceStateChanged;
+
         /// <summary>获取全部设备的快照列表（线程安全拷贝）</summary>
         /// <returns>设备列表副本；调用方可自由遍历，不受后续集合增删影响</returns>
         List<Device> GetDevices();

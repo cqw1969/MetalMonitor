@@ -18,6 +18,11 @@ namespace MetalMonitor.Core
         /// <summary>获取当前串口是否处于打开状态。</summary>
         public bool IsConnected => _serialPort?.IsOpen ?? false;
 
+        // 能力维度：每次访问实时查询注册表端口名单（本机实测约 26 微秒/次），
+        // USB 串口热插拔后无需重启进程即可反映真实状态（D-3 方案 A：动态计算）
+        /// <summary>当前系统是否存在串口硬件（动态查询，热插拔即时反映）。</summary>
+        public bool IsAvailable => SerialPort.GetPortNames().Length > 0;
+
         /// <summary>
         /// 原始字节数据到达事件；由 SerialPort 内部后台线程触发（非 UI 线程），
         /// 事件参数携带本次读取的原始字节（可能为半帧或粘包，未经任何解析）。
@@ -51,6 +56,15 @@ namespace MetalMonitor.Core
         /// </remarks>
         public async Task ConnectAsync(string portName)
         {
+            // 能力预检：目标端口不在当前系统端口名单中 → 抛 InvalidOperationException（能力缺失），
+            // 与 Open() 可能抛出的 IOException（端口被占用等状态故障）区分开，供上层分别处理
+            var existingPorts = SerialPort.GetPortNames();
+            if (Array.FindIndex(existingPorts, p => string.Equals(p, portName, StringComparison.OrdinalIgnoreCase)) < 0)
+            {
+                throw new InvalidOperationException(
+                    $"串口 {portName} 不存在于当前系统（可用端口: {(existingPorts.Length > 0 ? string.Join(", ", existingPorts) : "无")}）。");
+            }
+
             // 已有端口打开时先清理
             if (_serialPort != null && _serialPort.IsOpen)
             {

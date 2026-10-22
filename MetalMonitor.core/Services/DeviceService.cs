@@ -64,13 +64,8 @@ namespace MetalMonitor.core.Services
         private readonly Dictionary<string, double> _lastSimValues = new(); // 模拟数据平滑用：上一值缓存
 
         // ===== 配置与运行状态旗标 =====
-        // 注意：这是本类自己 new 的 ConfigService（非注入），与 DatabaseService 内部那份互为独立副本
-        /// <summary>本类自建的配置服务（非注入），读取批量大小与持久化数据源；与 DatabaseService 内的副本相互独立。</summary>
+        /// <summary>配置服务（DI 单例注入，全局唯一副本，与 DatabaseService 共享同一实例）。</summary>
         private readonly ConfigService _configService;
-        /// <summary>当前是否走 MQTT 通路；切源或断线时翻转为 false 以回退模拟数据。</summary>
-        private bool _useMqtt = false;                      // 当前是否走 MQTT 通路（切源/断线时翻转）
-        /// <summary>当前是否走串口通路；串口连接成功后置位，切源/连接失败时翻转（串口启用期间不再生成模拟数据）。</summary>
-        private bool _useSerial = false;                    // 当前是否走串口通路（连接成功置位/失败或切源翻转）
         /// <summary>设备列表是否已完成首次数据库同步的旗标。</summary>
         private bool _devicesLoaded = false;                // 设备列表是否已完成首次同步
         /// <summary>指标配置快照（整体替换式更新）：驱动模拟数据量程并作为报警阈值的来源。</summary>
@@ -79,6 +74,10 @@ namespace MetalMonitor.core.Services
         private Dictionary<string, MetricConfig> _metricConfigsByName = new();
         /// <summary>当前数据源，跨启动持久化在 config.json（存显示名，经 TryToDataSource 双向映射）。</summary>
         private DataSourceKind _selectedDataSource = DataSourceKind.Simulation; // 当前数据源；显示名映射见 DataSourceExtensions（单一事实源）
+        /// <summary>数据源运行状态（三态）：只由 InitializeMqttAsync / SetDataSourceAsync 写入，单写者。</summary>
+        private DataSourceState _state = DataSourceState.Online;
+        /// <summary>最近一次数据源故障原因；状态正常时清空。</summary>
+        private string? _lastDataSourceError;
 
         // 批量写入缓冲：达到 BatchSize 条后自动落盘，退出/切换时立即 flush
         /// <summary>待落库记录缓冲队列，三条数据通路的第三步都汇入此处。</summary>
@@ -108,108 +107,95 @@ namespace MetalMonitor.core.Services
         /// <summary>获取当前数据源显示名（枚举经 ToDisplay 映射，UI 与 config.json 均消费显示名）。</summary>
         public string DataSource => _selectedDataSource.ToDisplay();
 
+        /// <summary>当前数据源运行状态（正常/故障/不可用）；与用户选择无关，故障不会改写选择。</summary>
+        public DataSourceState State => _state;
+
+        /// <summary>最近一次数据源故障原因；状态正常时为 null。</summary>
+        public string? LastDataSourceError => _lastDataSourceError;
+
+        /// <summary>数据源状态变更通知：每次切换完成（成功或失败）触发，携带状态与失败原因。</summary>
+        public event EventHandler<DataSourceStateChangedEventArgs>? DataSourceStateChanged;
+
+        /// <summary>写入数据源运行状态并广播（不改变用户所选数据源、不写配置文件）。</summary>
+        /// <param name="state">新的运行状态。</param>
+        /// <param name="reason">失败原因（面向用户）；正常时传 null。</param>
+        private void SetState(DataSourceState state, string? reason)
+        {
+            _state = state;
+            _lastDataSourceError = state == DataSourceState.Online ? null : reason;
+            DataSourceStateChanged?.Invoke(this,
+                new DataSourceStateChangedEventArgs(state, _selectedDataSource.ToDisplay(), _lastDataSourceError));
+        }
+
         /// <summary>UI 数据源下拉框的可选项：由枚举自动生成（新增数据源只需扩枚举与映射表）。</summary>
         public string[] AvailableDataSources { get; } =
             Enum.GetValues<DataSourceKind>().Select(s => s.ToDisplay()).ToArray(); // UI 下拉框选项来源；"串口" 由 T3.4 激活
 
-        // ===== 构造函数族：能力按参数递增，DI 选"参数最多且依赖可满足"的那一个 =====
-        // App.xaml.cs 已注册 IAlarmService/IMqttService/IDatabaseService 三者，
-        // 运行时实际走 4 参数全功能版；其余重载是依赖缺失时的降级形态，
-        // 也是单元测试手动拼装替身组合的入口。所有重载经 : this(...) 链到最小版完成公共初始化。
-        // 注意：public 构造函数集合必须保证 DI 容器能选出唯一"参数最多且可解析"的构造函数，
-        // 不要给 public 构造函数加可选参数——可选参数会被 DI 视为可满足，引发构造函数歧义异常。
-        // 仅供单元测试使用的构造函数一律声明为 internal（对 DI 不可见）。
-        // 最小形态：只有报警服务——模拟数据通路总可用，MQTT/落库是可选增强
-        /// <summary>
-        /// 最小能力形态：仅注入报警服务，模拟数据通路可用，无 MQTT、不落库。
-        /// </summary>
-        /// <param name="alarmService">报警判定与边沿通知服务。</param>
-        public DeviceService(IAlarmService alarmService)
-        {
-            _alarmService = alarmService;
-            _devices = new List<Device>();
-            _configService = new ConfigService();   // 自建配置（非注入）：读 config.json 拿批量大小与默认数据源
-            InitializeBatchSettings();
-        }
+        // ===== 构造函数族 =====
+        // 构造函数族收敛说明：
+        //   之前的 1参/2参×2/3参/5参 靠 : this(...) 链式调用，且 1参内部 new ConfigService()，
+        //   导致 ConfigService 无法从 DI 注入（会被链上的 new 覆盖）。
+        //   现收敛为两个构造函数：
+        //     ① public 6 参（DI 选中）：全功能，所有依赖必填，从 DI 注入 ConfigService（单例）
+        //     ② internal 测试专用：ConfigService 与 MqttService 可选（不对 DI 暴露，不影响构造函数选择）
+        //   公共初始化抽入 Initialize(ConfigService)，两个构造函数都调用。
 
-        // +MQTT 通路：在此"接线"——把 MqttService 的两个事件挂到本类私有方法上，
-        // 之后每条消息到达都会自动流入 OnMqttMessageReceived（数据通路②的源头）
         /// <summary>
-        /// 在最小形态基础上增加 MQTT 通路：挂接消息接收与断线事件，消息到达自动流入 MQTT 处理路径。
-        /// </summary>
-        /// <param name="alarmService">报警判定与边沿通知服务。</param>
-        /// <param name="mqttService">MQTT 数据源服务。</param>
-        public DeviceService(IAlarmService alarmService, IMqttService mqttService) : this(alarmService)
-        {
-            _mqttService = mqttService;
-            _mqttService.MessageReceived += OnMqttMessageReceived;
-            _mqttService.Disconnected += OnMqttDisconnected;
-        }
-
-        // +落库：拿到数据库服务后，三步汇合点的第三步（EnqueueDataRecord）才真正生效
-        /// <summary>
-        /// 在最小形态基础上增加落库能力：缓冲记录达到批量阈值后可写入数据库。
-        /// </summary>
-        /// <param name="alarmService">报警判定与边沿通知服务。</param>
-        /// <param name="databaseService">数据库落库服务。</param>
-        public DeviceService(IAlarmService alarmService, IDatabaseService databaseService) : this(alarmService)
-        {
-            _databaseService = databaseService;
-        }
-
-        // 全功能形态（DI 运行时实际选中）：先链到 MQTT 版完成事件接线，再补上落库能力
-        /// <summary>
-        /// 全功能形态（DI 运行时实际选中的参数最多构造函数）：报警 + MQTT 通路 + 批量落库全部可用。
-        /// </summary>
-        /// <param name="alarmService">报警判定与边沿通知服务。</param>
-        /// <param name="mqttService">MQTT 数据源服务。</param>
-        /// <param name="databaseService">数据库落库服务。</param>
-        public DeviceService(IAlarmService alarmService, IMqttService mqttService, IDatabaseService databaseService) : this(alarmService, mqttService)
-        {
-            _databaseService = databaseService;
-        }
-
-        // 全功能形态 + 串口接入（DI 运行时实际选中的参数最多构造函数）：
-        // 先链到 3 参全功能版完成公共初始化，再"接线"串口——
-        // 把 SerialService.DataReceived 与 FrameParser.FrameParsed 挂到本类私有方法上，
-        // 之后原始字节到达会自动流入 OnSerialRawData → FrameParser → OnFrameParsed（数据通路③的源头）
-        /// <summary>
-        /// 全功能形态 + 串口接入：在报警/MQTT/落库之上接入串口通路，挂接原始字节与解析帧事件，
-        /// 并以启动只读路由表快照建立帧路由器。
+        /// 全功能构造函数（DI 运行时选中）：报警 + MQTT 通路 + 批量落库 + 串口通路全部注入，
+        /// 配置服务由 DI 单例注入，构造时完成公共初始化并挂接所有事件。
         /// </summary>
         /// <param name="alarmService">报警判定与边沿通知服务。</param>
         /// <param name="mqttService">MQTT 数据源服务。</param>
         /// <param name="databaseService">数据库落库服务。</param>
         /// <param name="serialService">串口数据源服务（原始字节来源）。</param>
         /// <param name="frameParser">协议帧解析器（原始字节 → SensorDataFrame）。</param>
+        /// <param name="configService">配置服务（DI 单例，全局唯一副本）。</param>
         public DeviceService(IAlarmService alarmService, IMqttService mqttService, IDatabaseService databaseService,
-            ISerialService serialService, FrameParser frameParser) : this(alarmService, mqttService, databaseService)
+            ISerialService serialService, FrameParser frameParser, ConfigService configService)
         {
+            _alarmService = alarmService;
+            _mqttService = mqttService;
+            _databaseService = databaseService;
             _serialService = serialService;
             _frameParser = frameParser;
+            _configService = configService;
+            _devices = new List<Device>();
+            InitializeBatchSettings();
             // 路由表为启动只读快照（运行中不变），构造时建立路由器即可
             _frameRouter = new FrameRouter(_configService.GetNodeRoutingSnapshot());
+            // MQTT 接线：消息到达自动流入 OnMqttMessageReceived（数据通路②的源头）
+            _mqttService.MessageReceived += OnMqttMessageReceived;
+            _mqttService.Disconnected += OnMqttDisconnected;
+            // 串口接线：原始字节 → OnSerialRawData → FrameParser → OnFrameParsed（数据通路③的源头）
             _serialService.DataReceived += OnSerialRawData;
             _frameParser.FrameParsed += OnFrameParsed;
         }
 
-        // 单元测试专用：显式注入配置（internal：DI 容器看不到，不会参与构造函数选择）。
+        // 单元测试专用：internal 对 DI 容器不可见，不参与构造函数选择。
         // 与 public 版的关键差异：ConfigService 由测试提供（可指向临时目录），
-        // 避免测试读写真实 config.json，也绕开 DI 的构造函数选择
+        // MqttService 可选——需要测试 MQTT 通路时传入，否则留空。
         /// <summary>
-        /// 单元测试专用构造函数：由测试显式提供配置实例（可指向临时目录），避免读写真实 config.json。
+        /// 单元测试专用构造函数：由测试显式提供配置实例（可指向临时目录），MQTT 通路可选。
         /// </summary>
         /// <param name="alarmService">报警判定与边沿通知服务（可为测试替身）。</param>
         /// <param name="databaseService">数据库落库服务（可为测试替身）。</param>
-        /// <param name="configService">测试提供的配置服务实例。</param>
+        /// <param name="configService">测试提供的配置服务实例；为 null 时自动新建（读取真实 config.json）。</param>
+        /// <param name="mqttService">可选 MQTT 服务；传入时挂接消息与断线事件，用于测试 MQTT 通路。</param>
         /// <remarks>声明为 internal 并对 DI 容器不可见，不参与构造函数选择。</remarks>
-        internal DeviceService(IAlarmService alarmService, IDatabaseService databaseService, ConfigService configService)
+        internal DeviceService(IAlarmService alarmService, IDatabaseService databaseService,
+            ConfigService? configService = null, IMqttService? mqttService = null)
         {
             _alarmService = alarmService;
-            _devices = new List<Device>();
             _databaseService = databaseService;
-            _configService = configService;
+            _configService = configService ?? new ConfigService();
+            _devices = new List<Device>();
             InitializeBatchSettings();
+            if (mqttService != null)
+            {
+                _mqttService = mqttService;
+                _mqttService.MessageReceived += OnMqttMessageReceived;
+                _mqttService.Disconnected += OnMqttDisconnected;
+            }
         }
 
         /// <summary>
@@ -230,11 +216,11 @@ namespace MetalMonitor.core.Services
         /// <returns>表示异步初始化操作的任务。</returns>
         /// <remarks>
         /// 非 MQTT 数据源直接返回，避免抢占用户选择的数据源；
-        /// 连接或订阅失败时静默回退模拟数据并写回配置，不向上抛出异常。
+        /// 连接或订阅失败时保持用户所选数据源不变，仅标记 <see cref="DataSourceState.Faulted"/> 并广播原因。
         /// </remarks>
         public async Task InitializeMqttAsync()
         {
-            // 启动时若持久化数据源为串口：复用切源逻辑尝试连接（失败时同样静默回退模拟数据并写回配置）
+            // 启动时若持久化数据源为串口：复用切源逻辑尝试连接（失败时同样只标记状态，不改配置）
             if (_selectedDataSource == DataSourceKind.Serial)
             {
                 await SetDataSourceAsync(DataSourceKind.Serial.ToDisplay()).ConfigureAwait(false);
@@ -251,14 +237,12 @@ namespace MetalMonitor.core.Services
                 {
                     await _mqttService.ConnectAsync().ConfigureAwait(false);
                     await _mqttService.SubscribeAsync("metalmonitor/devices/#").ConfigureAwait(false);
-                    _useMqtt = true;
+                    SetState(DataSourceState.Online, null);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // 连接失败：回退到模拟数据
-                    _useMqtt = false;
-                    _selectedDataSource = DataSourceKind.Simulation;
-                    _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
+                    // 连接失败：保持用户所选 MQTT 不变，只标记故障并广播；不回退模拟数据、不写配置
+                    SetState(DataSourceState.Faulted, ex.Message);
                 }
             }
         }
@@ -269,8 +253,9 @@ namespace MetalMonitor.core.Services
         /// <param name="source">目标数据源名称（"模拟数据"/"MQTT"/"串口"）。</param>
         /// <returns>表示异步切换操作的任务。</returns>
         /// <remarks>
-        /// MQTT 不可用或连接失败时回退到模拟数据；串口不可用（串口能力缺失）或连接失败时同样回退到模拟数据；
-        /// 切回模拟数据时若 MQTT 已连接则主动断开。冲刷与断连异常被隔离吞掉，不阻断切换。
+        /// 用户所选数据源先持久化，再按目标通路执行连接/断开；
+        /// 连接失败或能力缺失时不改写用户选择与 config.json，只置 <see cref="State"/> 并广播原因；
+        /// 切回模拟数据时若 MQTT/串口已连接则主动断开。冲刷与断连异常被隔离吞掉，不阻断切换。
         /// </remarks>
         public async Task SetDataSourceAsync(string source)
         {
@@ -295,24 +280,19 @@ namespace MetalMonitor.core.Services
                                 await _mqttService.ConnectAsync().ConfigureAwait(false);
                                 await _mqttService.SubscribeAsync("metalmonitor/devices/#").ConfigureAwait(false);
                             }
-                            _useMqtt = true;
+                            SetState(DataSourceState.Online, null);
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // 连接失败：回退到模拟数据，由 UI 层同步回下拉框
-                            _useMqtt = false;
-                            _selectedDataSource = DataSourceKind.Simulation;
-                            _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
+                            // 连接失败：保持用户选择不变，只标记故障并广播（不再回退模拟数据）
+                            SetState(DataSourceState.Faulted, ex.Message);
                         }
                     }
                     else
                     {
-                        _useMqtt = false;
-                        _selectedDataSource = DataSourceKind.Simulation;
-                        _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
+                        SetState(DataSourceState.Unavailable, "MQTT 服务未注册");
                     }
                     // 串口启用中则断开，避免切到 MQTT 后旧串口通路继续推数据
-                    _useSerial = false;
                     if (_serialService?.IsConnected == true)
                     {
                         try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
@@ -320,13 +300,22 @@ namespace MetalMonitor.core.Services
                     break;
                 case DataSourceKind.Serial:
                     // 切到串口前先停掉 MQTT 通路（与模拟数据分支保持一致）
-                    _useMqtt = false;
                     if (_mqttService != null && _mqttService.IsConnected)
                     {
                         try { await _mqttService.DisconnectAsync().ConfigureAwait(false); } catch { }
                     }
 
-                    if (_serialService != null)
+                    if (_serialService == null)
+                    {
+                        // 能力缺失：串口服务未注册（仅测试构造可能出现），标记不可用并明示原因
+                        SetState(DataSourceState.Unavailable, "串口服务未注册");
+                    }
+                    else if (!_serialService.IsAvailable)
+                    {
+                        // 能力缺失：当前系统没有任何串口硬件，重试也不会成功
+                        SetState(DataSourceState.Unavailable, "当前系统未检测到任何串口设备");
+                    }
+                    else
                     {
                         try
                         {
@@ -337,38 +326,27 @@ namespace MetalMonitor.core.Services
                                 portName = _serialService.GetAvailablePorts().FirstOrDefault() ?? string.Empty;
 
                             await _serialService.ConnectAsync(portName).ConfigureAwait(false);
-                            _useSerial = true;                          // 连接成功：置串口启用标记（心跳不再生成模拟数据）
                             _configService.SerialPortName = portName;   // 把实际使用的端口名回写并持久化
+                            SetState(DataSourceState.Online, null);
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // 连接失败：同 MQTT 分支一致，回退模拟数据 + 落规范化配置值供 UI 同步
-                            _useSerial = false;
-                            _selectedDataSource = DataSourceKind.Simulation;
-                            _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
+                            // 连接失败（端口被占用 / 持久化端口已消失等）：保持用户选择，只标记故障并广播
+                            SetState(DataSourceState.Faulted, ex.Message);
                         }
-                    }
-                    else
-                    {
-                        // 串口能力缺失（3/4 参构造）：保持原回退行为并写日志
-                        _useSerial = false;
-                        _selectedDataSource = DataSourceKind.Simulation;
-                        _configService.DataSource = DataSourceKind.Simulation.ToDisplay();
-                        Console.WriteLine("[DeviceService] 所选数据源为串口，但串口服务不可用，已回退模拟数据");
                     }
                     break;
                 case DataSourceKind.Simulation:
-                    _useMqtt = false;
                     if (_mqttService != null && _mqttService.IsConnected)
                     {
                         try { await _mqttService.DisconnectAsync().ConfigureAwait(false); } catch { }
                     }
                     // 串口启用中则断开，避免切到模拟数据后旧串口通路继续推数据
-                    _useSerial = false;
                     if (_serialService?.IsConnected == true)
                     {
                         try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
                     }
+                    SetState(DataSourceState.Online, null);
                     break;
             }
         }
@@ -721,14 +699,14 @@ namespace MetalMonitor.core.Services
 
         // MQTT 断线回调：只翻转旗标，真正的重连/降级在心跳 UpdateDevicesAsync 里处理
         /// <summary>
-        /// MQTT 断线事件回调：仅将 MQTT 通路旗标置为 false。
+        /// MQTT 断线事件回调：当前为预留挂点（见remarks）。
         /// </summary>
         /// <param name="sender">事件发送方，未使用。</param>
         /// <param name="e">事件参数，未使用。</param>
-        /// <remarks>真正的回退动作发生在下一次心跳 <see cref="UpdateDevicesAsync"/>（自动改走模拟数据），回调内不做重连。</remarks>
+        /// <remarks>断线后 MQTT 数据自然停更（心跳不再生成模拟数据，见 D-5）；状态标记与重连策略归 T4.1 三态接管。</remarks>
         private void OnMqttDisconnected(object? sender, EventArgs e)
         {
-            _useMqtt = false;
+            // STEP-3.1：原 _useMqtt 旗标已随死写入清理移除；断线后的状态标记与重连归 T4.1 三态接管
         }
 
         // 心跳入口（UI 定时器每秒调一次）：本类对上层暴露的唯一"推进"方法。
@@ -740,7 +718,7 @@ namespace MetalMonitor.core.Services
         /// <returns>表示本拍异步处理的任务；对象已释放时立即完成。</returns>
         /// <remarks>
         /// 首次心跳且数据库可用时从库同步设备列表与指标配置（<c>_devicesLoaded</c> 保证只做一次）；
-        /// 未启用 MQTT 或 MQTT 已断连时执行模拟数据生成，MQTT 通路本身不在此调用（消息事件驱动）；
+        /// 仅当所选数据源为"模拟数据"时生成模拟值，MQTT/串口通路本身不在此调用（事件驱动）；
         /// 缓冲达 BatchSize 时由 <see cref="FlushIfNeededAsync"/> 写库；距上次检查点满 60 秒时回收 WAL。
         /// </remarks>
         public async Task UpdateDevicesAsync()
@@ -758,10 +736,9 @@ namespace MetalMonitor.core.Services
                 }
             }
 
-            // 数据源选择：未启用 MQTT，或 MQTT 已断连 → 走模拟数据；
-            // 注意 MQTT 通路不在这里调用——它由事件驱动（OnMqttMessageReceived），此处只决定"是否还用模拟"
-            // 串口启用期间同样不生成模拟数据（_useSerial 为 true 时整条模拟生成被短路）
-            if (!_useSerial && (!_useMqtt || !_mqttService?.IsConnected == true))
+            // 只有用户明确选择"模拟数据"时才生成模拟值；
+            // 串口/MQTT 故障期间宁可停更（曲线不动、状态标记故障），也不拿假数据冒充真数据
+            if (_selectedDataSource == DataSourceKind.Simulation)
             {
                 UpdateDeviceData();
             }

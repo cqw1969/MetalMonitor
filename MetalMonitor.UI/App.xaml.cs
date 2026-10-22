@@ -99,6 +99,7 @@ namespace MetalMonitor.UI
         {
             var services = new ServiceCollection();
 
+            services.AddSingleton<ConfigService>();
             services.AddSingleton<IAlarmService, AlarmService>();
             services.AddSingleton<IMqttService, MqttService>();
             services.AddSingleton<IDatabaseService, DatabaseService>();

@@ -171,6 +171,32 @@ namespace MetalMonitor.Tests
         }
 
         [Fact]
+        public async Task SetDataSourceAsync_MqttConnectFails_KeepsChoiceAndStopsSimulation()
+        {
+            _db.Setup(x => x.GetAllDevicesAsync()).ReturnsAsync(Devices(new Device("1号冲压机") { Id = "d1" }));
+            _db.Setup(x => x.GetAllMetricConfigsAsync()).ReturnsAsync(DefaultMetrics());
+
+            var mqtt = new Mock<IMqttService>();
+            mqtt.SetupGet(x => x.IsConnected).Returns(false);
+            mqtt.Setup(x => x.ConnectAsync()).ThrowsAsync(new IOException("broker unreachable"));
+
+            var config = new ConfigService(Path.Combine(_tempDir, "config.json")) { BatchSize = 5 };
+            var svc = new DeviceService(_alarm, _db.Object, config, mqtt.Object);
+
+            await svc.SetDataSourceAsync("MQTT");
+
+            // 故障不再回退：用户选择与配置文件都保持 MQTT，失败通过状态面暴露
+            Assert.Equal("MQTT", svc.DataSource);
+            Assert.Equal("MQTT", config.DataSource);
+            Assert.Equal(DataSourceState.Faulted, svc.State);
+            Assert.Equal("broker unreachable", svc.LastDataSourceError);
+
+            // 关键回归点：故障期间心跳不得生成假数据（旧实现只改下拉框，模拟生成仍会继续）
+            await Tick(svc, 5);
+            Assert.Empty(_batches);
+        }
+
+        [Fact]
         public async Task MqttActive_SkipsSimulatedDataGeneration()
         {
             _db.Setup(x => x.GetAllDevicesAsync()).ReturnsAsync(Devices(new Device("1号冲压机") { Id = "d1" }));
@@ -181,7 +207,7 @@ namespace MetalMonitor.Tests
             mqtt.Setup(x => x.ConnectAsync()).Returns(Task.CompletedTask);
             mqtt.Setup(x => x.SubscribeAsync(It.IsAny<string>())).Returns(Task.CompletedTask);
 
-            var svc = new DeviceService(_alarm, mqtt.Object, _db.Object);
+            var svc = new DeviceService(_alarm, _db.Object, mqttService: mqtt.Object);
             await svc.SetDataSourceAsync("MQTT");
 
             await Tick(svc, 3);
@@ -199,7 +225,7 @@ namespace MetalMonitor.Tests
             var mqtt = new Mock<IMqttService>();
             mqtt.SetupGet(x => x.IsConnected).Returns(true); // 已连接：切源不真正发起连接，仅启用 MQTT 通路
 
-            var svc = new DeviceService(_alarm, mqtt.Object, _db.Object);
+            var svc = new DeviceService(_alarm, _db.Object, mqttService: mqtt.Object);
             await svc.ReloadDevicesAsync(); // 先加载设备列表
             await svc.SetDataSourceAsync("MQTT"); // 启用 MQTT：心跳不再生成模拟数据
 
@@ -241,7 +267,7 @@ namespace MetalMonitor.Tests
             var mqtt = new Mock<IMqttService>();
             mqtt.SetupGet(x => x.IsConnected).Returns(false);
 
-            var svc = new DeviceService(_alarm, mqtt.Object, _db.Object);
+            var svc = new DeviceService(_alarm, _db.Object, mqttService: mqtt.Object);
             await svc.ReloadDevicesAsync();
 
             var payload = JsonSerializer.Serialize(new
@@ -268,7 +294,7 @@ namespace MetalMonitor.Tests
             var mqtt = new Mock<IMqttService>();
             mqtt.SetupGet(x => x.IsConnected).Returns(true);
 
-            var svc = new DeviceService(_alarm, mqtt.Object, _db.Object);
+            var svc = new DeviceService(_alarm, _db.Object, mqttService: mqtt.Object);
             await svc.ReloadDevicesAsync();
             await svc.SetDataSourceAsync("MQTT");
 

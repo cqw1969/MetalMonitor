@@ -126,6 +126,8 @@ namespace MetalMonitor.UI.ViewModels
             _selectedDataSource = _deviceService.DataSource;
 
             _alarmService.AlarmStateChanged += OnAlarmStateChanged;
+            // 数据源状态变更（成功/故障/不可用）统一走事件提示，不在切源代码里各写一份日志
+            _deviceService.DataSourceStateChanged += OnDataSourceStateChanged;
 
             //Devices = new ObservableCollection<Device>();
             DeviceCardViewModels = new ObservableCollection<DeviceCardViewModel>();
@@ -298,26 +300,48 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         /// <summary>
-        /// 切换数据来源：调用设备服务执行切换，并根据切换结果记录成功/失败日志；
-        /// 切换失败（如 MQTT 连接失败）时将下拉框回退为实际数据源。
+        /// 切换数据来源：调用设备服务执行切换，并刷新数据来源显示。
         /// </summary>
         /// <param name="source">目标数据来源名称。</param>
         /// <returns>表示异步切换操作的任务。</returns>
+        /// <remarks>
+        /// 失败不再回退下拉框：用户的选择保持不变，失败原因由 <see cref="OnDataSourceStateChanged"/> 写入日志区。
+        /// </remarks>
         public async Task SwitchDataSourceAsync(string source)
         {
             await _deviceService.SetDataSourceAsync(source);
             OnPropertyChanged(nameof(DataSource));
+        }
 
-            if (_deviceService.DataSource != source)
+        /// <summary>
+        /// 数据源状态变更回调：正常记成功，故障/不可用记明原因；状态栏提示不静默。
+        /// </summary>
+        /// <param name="sender">事件发送者（设备服务实例）。</param>
+        /// <param name="e">状态变更参数（新状态、数据源显示名、失败原因）。</param>
+        /// <remarks>Core 侧全程 ConfigureAwait(false)，事件可能落在后台线程；AlarmLogs 为 UI 集合，需封送回 UI 线程。</remarks>
+        private void OnDataSourceStateChanged(object? sender, DataSourceStateChangedEventArgs e)
+        {
+            void Apply()
             {
-                // 切换失败（如 MQTT 连接失败），回退下拉框为实际数据源
-                _selectedDataSource = _deviceService.DataSource;
-                OnPropertyChanged(nameof(SelectedDataSource));
-                AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✗ 切换到 {source} 失败，已回退为：{_deviceService.DataSource}");
+                if (e.State == DataSourceState.Online)
+                {
+                    AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✓ 数据来源已切换为：{e.SourceDisplay}");
+                }
+                else
+                {
+                    string stateText = e.State == DataSourceState.Unavailable ? "不可用" : "连接失败";
+                    AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✗ {e.SourceDisplay} {stateText}：{e.Reason}");
+                }
+            }
+
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher != null && !dispatcher.CheckAccess())
+            {
+                dispatcher.BeginInvoke(Apply);
             }
             else
             {
-                AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✓ 数据来源已切换为：{source}");
+                Apply();
             }
         }
 
@@ -724,6 +748,9 @@ namespace MetalMonitor.UI.ViewModels
                 {
                     _alarmService.AlarmStateChanged -= OnAlarmStateChanged;
                 }
+
+                // 取消数据源状态事件订阅
+                _deviceService.DataSourceStateChanged -= OnDataSourceStateChanged;
 
                 // 释放所有 DeviceCardViewModel
                 foreach (var vm in DeviceCardViewModels)

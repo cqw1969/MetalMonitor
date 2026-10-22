@@ -27,6 +27,9 @@ namespace MetalMonitor.Core
         /// <summary>连接状态变更事件（后台线程触发）；参数为 true=已连接 / false=已断开。</summary>
         event EventHandler<bool>? ConnectionStateChanged;
 
+        /// <summary>当前系统是否存在串口硬件（能力维度，每次访问实时查询）；与 <see cref="IsConnected"/>（状态维度）语义不同。</summary>
+        bool IsAvailable { get; }
+
         /// <summary>当前是否处于已连接状态。</summary>
         bool IsConnected { get; }
     }
