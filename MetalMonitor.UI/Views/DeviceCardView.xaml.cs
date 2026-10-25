@@ -46,7 +46,7 @@ namespace MetalMonitor.UI.Views
     /// <summary>
     /// 设备卡片点击事件参数：携带被点击卡片对应的设备。
     /// </summary>
-    public class DeviceCardClickedEventArgs : EventArgs
+    public sealed class DeviceCardClickedEventArgs : EventArgs
     {
         /// <summary>获取被点击卡片对应的设备。</summary>
         public Device Device { get; }

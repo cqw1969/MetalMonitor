@@ -74,10 +74,23 @@ namespace MetalMonitor.core.Services
         private Dictionary<string, MetricConfig> _metricConfigsByName = new();
         /// <summary>当前数据源，跨启动持久化在 config.json（存显示名，经 TryToDataSource 双向映射）。</summary>
         private DataSourceKind _selectedDataSource = DataSourceKind.Simulation; // 当前数据源；显示名映射见 DataSourceExtensions（单一事实源）
-        /// <summary>数据源运行状态（三态）：只由 InitializeMqttAsync / SetDataSourceAsync 写入，单写者。</summary>
+        /// <summary>数据源运行状态（三态）：只由 InitializeDataSourceAsync / SetDataSourceAsync 写入，单写者。</summary>
         private DataSourceState _state = DataSourceState.Online;
         /// <summary>最近一次数据源故障原因；状态正常时清空。</summary>
         private string? _lastDataSourceError;
+
+        // ===== 串口链路健康（T4.1）=====
+        // 单调毫秒时间戳（Environment.TickCount64），跨串口后台线程与心跳线程读写，全部用 Volatile
+        /// <summary>本次串口连接成功的时刻；0 表示未连接（Inactive 判据）。</summary>
+        private long _serialConnectedAtMs;
+        /// <summary>最近一次收到任意原始字节的时刻（乱码也算）；0 表示本次连接后从未收到。</summary>
+        private long _lastSerialByteMs;
+        /// <summary>最近一次收到有效帧（CRC 已通过）的时刻；0 表示从未收到。</summary>
+        private long _lastSerialValidFrameMs;
+        /// <summary>当前链路健康状态（单一权威源）；只在 EvaluateLinkHealthAt 中跃迁并广播。</summary>
+        private volatile LinkHealth _linkHealth = LinkHealth.Inactive;
+        /// <summary>链路健康跃迁锁：串口后台线程与心跳线程都会评估，保证"比较 + 写入"原子且只广播一次。</summary>
+        private readonly object _linkHealthLock = new();
 
         // 批量写入缓冲：达到 BatchSize 条后自动落盘，退出/切换时立即 flush
         /// <summary>待落库记录缓冲队列，三条数据通路的第三步都汇入此处。</summary>
@@ -93,7 +106,7 @@ namespace MetalMonitor.core.Services
         /// <summary>上次执行 WAL 检查点的 UTC 时间。</summary>
         private DateTime _lastCheckpointUtc = DateTime.UtcNow;    // 上次 WAL 检查点时间
         /// <summary>对象释放标记：置位后各数据通路与冲刷路径静默短路。</summary>
-        private bool _disposed = false;                           // 释放标记：Dispose 后各路径静默短路
+        private volatile bool _disposed = false;                  // 释放标记：Dispose 后各路径静默短路
 
         /// <summary>每指标在内存中保留的最大历史点数（60）。</summary>
         public int MaxHistoryPoints { get; } = 60;
@@ -112,6 +125,12 @@ namespace MetalMonitor.core.Services
 
         /// <summary>最近一次数据源故障原因；状态正常时为 null。</summary>
         public string? LastDataSourceError => _lastDataSourceError;
+
+        /// <summary>当前串口链路健康状态（未选串口/未连接时为 Inactive）；只在跃迁时广播。</summary>
+        public LinkHealth LinkHealth => _linkHealth;
+
+        /// <summary>链路健康变更通知：仅在状态真正跃迁时触发（每秒心跳不重复广播同值）。</summary>
+        public event EventHandler<LinkHealthChangedEventArgs>? LinkHealthChanged;
 
         /// <summary>数据源状态变更通知：每次切换完成（成功或失败）触发，携带状态与失败原因。</summary>
         public event EventHandler<DataSourceStateChangedEventArgs>? DataSourceStateChanged;
@@ -168,6 +187,7 @@ namespace MetalMonitor.core.Services
             _mqttService.Disconnected += OnMqttDisconnected;
             // 串口接线：原始字节 → OnSerialRawData → FrameParser → OnFrameParsed（数据通路③的源头）
             _serialService.DataReceived += OnSerialRawData;
+            _serialService.ConnectionStateChanged += OnSerialConnectionStateChanged;
             _frameParser.FrameParsed += OnFrameParsed;
         }
 
@@ -210,15 +230,15 @@ namespace MetalMonitor.core.Services
         }
 
         /// <summary>
-        /// 启动时按需预连接 MQTT：仅当持久化数据源为 MQTT 时连接 Broker 并订阅
-        /// metalmonitor/devices/# 主题。
+        /// 启动时按需预连接数据源：持久化为串口则尝试连接串口；
+        /// 持久化为 MQTT 时连接 Broker 并订阅 metalmonitor/devices/# 主题。
         /// </summary>
         /// <returns>表示异步初始化操作的任务。</returns>
         /// <remarks>
-        /// 非 MQTT 数据源直接返回，避免抢占用户选择的数据源；
+        /// 非串口/非 MQTT 数据源直接返回，避免抢占用户选择的数据源；
         /// 连接或订阅失败时保持用户所选数据源不变，仅标记 <see cref="DataSourceState.Faulted"/> 并广播原因。
         /// </remarks>
-        public async Task InitializeMqttAsync()
+        public async Task InitializeDataSourceAsync()
         {
             // 启动时若持久化数据源为串口：复用切源逻辑尝试连接（失败时同样只标记状态，不改配置）
             if (_selectedDataSource == DataSourceKind.Serial)
@@ -468,6 +488,9 @@ namespace MetalMonitor.core.Services
         {
             try
             {
+                // 先记"任意字节"时刻（乱码也算链路有信号），再喂解析器
+                long now = Environment.TickCount64;
+                Volatile.Write(ref _lastSerialByteMs, now);
                 _frameParser?.Feed(e.Data);
             }
             catch
@@ -494,6 +517,9 @@ namespace MetalMonitor.core.Services
         {
             try
             {
+                // 有效帧时刻先于路由判定记录：未知节点/未匹配设备的帧同样证明"链路能解析出真帧"
+                Volatile.Write(ref _lastSerialValidFrameMs, Environment.TickCount64);
+
                 // 串口能力缺失（3/4 参构造）时 _frameRouter 为 null，安全跳过
                 if (_frameRouter == null) return;
 
@@ -531,6 +557,104 @@ namespace MetalMonitor.core.Services
             catch
             {
                 // 回调事件处理器不得把异常抛回后台线程，静默吞掉
+            }
+        }
+
+        /// <summary>
+        /// 串口连接状态回调：维护连接时刻并按新连接重新开始判据（连接/断开都清零字节与有效帧时间戳）。
+        /// </summary>
+        /// <remarks>运行在串口后台线程；整体 try-catch，异常不得抛回后台线程。</remarks>
+        private void OnSerialConnectionStateChanged(object? sender, bool connected)
+        {
+            try
+            {
+                long now = Environment.TickCount64;
+                Volatile.Write(ref _serialConnectedAtMs, connected ? now : 0);
+                Volatile.Write(ref _lastSerialByteMs, 0);
+                Volatile.Write(ref _lastSerialValidFrameMs, 0);
+                EvaluateLinkHealthAt(now);
+            }
+            catch
+            {
+                // 回调事件处理器不得把异常抛回后台线程，静默吞掉
+            }
+        }
+
+        /// <summary>
+        /// 按当前时间戳评估链路健康；仅在状态跃迁时赋值并广播。
+        /// </summary>
+        /// <param name="nowMs">评估时刻（单调毫秒）；单测可传假时间，无需等待真实秒数。</param>
+        internal void EvaluateLinkHealthAt(long nowMs)
+        {
+            if (_disposed) return;
+
+            int watchdogSeconds = _configService.SerialWatchdogSeconds;
+            var next = LinkHealthEvaluator.Evaluate(
+                nowMs,
+                Volatile.Read(ref _serialConnectedAtMs),
+                Volatile.Read(ref _lastSerialByteMs),
+                Volatile.Read(ref _lastSerialValidFrameMs),
+                watchdogSeconds);
+
+            lock (_linkHealthLock)
+            {
+                if (next == _linkHealth) return;   // 同值不广播，避免每秒心跳造成事件风暴
+                _linkHealth = next;
+            }
+
+            // 事件在锁外触发，订阅方回调不延长持锁时间
+            LinkHealthChanged?.Invoke(this, new LinkHealthChangedEventArgs(
+                next, DataSourceKind.Serial.ToDisplay(), BuildLinkHealthReason(next, watchdogSeconds)));
+        }
+
+        /// <summary>
+        /// 给链路健康状态生成面向用户的一句话原因（健康时为 null）。
+        /// </summary>
+        private static string? BuildLinkHealthReason(LinkHealth health, int watchdogSeconds) => health switch
+        {
+            LinkHealth.Inactive => "串口未连接",
+            LinkHealth.Recovering => "串口已连接，等待首帧",
+            LinkHealth.NoSignal => $"超过 {watchdogSeconds} 秒未收到任何串口数据",
+            LinkHealth.NoValidFrame => $"超过 {watchdogSeconds} 秒未收到有效数据帧",
+            _ => null
+        };
+
+        /// <summary>
+        /// 按指标值年龄与链路状态执行质量降级扫描：写值路径已无条件置 Good，本方法只负责降级。
+        /// </summary>
+        /// <param name="nowMs">扫描时刻（单调毫秒）；单测可传假时间。</param>
+        /// <remarks>
+        /// 只扫描 <see cref="_metricConfigs"/> 中启用的指标（与 UI 展示口径一致）；
+        /// 仅当所选数据源为串口且链路明确故障（Inactive/NoSignal/NoValidFrame）时才判 Bad，
+        /// 其他情况超期只判 Stale——MQTT 运行中断线尚无事件，不能据此断言"值坏了"。
+        /// </remarks>
+        internal void ApplyQualityDegradationAt(long nowMs)
+        {
+            if (_disposed) return;
+
+            bool linkFaulted = _selectedDataSource == DataSourceKind.Serial
+                && _linkHealth != LinkHealth.Healthy
+                && _linkHealth != LinkHealth.Recovering;
+
+            int staleSeconds = _configService.MetricStaleSeconds;
+            var metrics = _metricConfigs;   // 整体替换式更新，取引用快照即可
+
+            List<Device> snapshot;
+            lock (_devicesLock)
+            {
+                snapshot = _devices.AsReadOnly().ToList();
+            }
+
+            foreach (var device in snapshot)
+            {
+                if (!device.IsActive) continue;
+                foreach (var metric in metrics)
+                {
+                    if (!metric.IsActive) continue;
+                    var quality = MetricQualityEvaluator.Evaluate(
+                        nowMs, device.GetMetricValueMs(metric.Name), staleSeconds, linkFaulted);
+                    device.SetMetricQuality(metric.Name, quality);   // 同值内部短路，不重复通知
+                }
             }
         }
 
@@ -746,6 +870,11 @@ namespace MetalMonitor.core.Services
             // 排空暂存区：模拟/MQTT/串口三条来源的样本在此统一执行"业务三步"（报警判定→写报警状态→写值→边沿通知）
             ApplyPendingSamples();
 
+            // T4.1：先评估链路健康，再按新鲜度做质量降级（写值瞬间已置 Good，此处只降级）
+            long nowMs = Environment.TickCount64;
+            EvaluateLinkHealthAt(nowMs);
+            ApplyQualityDegradationAt(nowMs);
+
             // 三步汇合点的第三步在此统一冲刷：达到阈值才写库，摊薄磁盘 IO 开销
             await FlushIfNeededAsync().ConfigureAwait(false);
 
@@ -926,7 +1055,19 @@ namespace MetalMonitor.core.Services
         /// </remarks>
         public async Task FlushAsync()
         {
-            if (_databaseService == null || _disposed) return;
+            if (_disposed) return;
+
+            await FlushCoreAsync().ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// 冲刷内核：不检查释放标记，仅供 <see cref="Dispose"/> 在置位后兜底排空。
+        /// </summary>
+        /// <returns>表示异步冲刷操作的任务；无数据库服务或缓冲为空时立即完成。</returns>
+        /// <remarks>与 <see cref="FlushAsync"/> 的唯一区别是不查 <c>_disposed</c>——否则"先置位再冲刷"会被门卫挡住。</remarks>
+        private async Task FlushCoreAsync()
+        {
+            if (_databaseService == null) return;
 
             List<DataRecord>? toFlush = null;
             lock (_batchLock)
@@ -1011,19 +1152,30 @@ namespace MetalMonitor.core.Services
 
         #region IDisposable
         /// <summary>
-        /// 释放资源：同步强制冲刷剩余缓冲数据以防丢失，然后置位释放标记使各数据通路静默短路。
+        /// 释放资源：先置位释放标记阻断所有入队路径，再兜底冲刷剩余缓冲，最后退订事件接线。
         /// </summary>
         /// <remarks>重复调用安全；冲刷异常被吞掉，保证释放流程不抛出。</remarks>
         public void Dispose()
         {
             if (_disposed) return;
+
             // 退出时立即落盘剩余缓冲数据
             //关于这里,是不是该在清空之前停止心跳,否则心跳线程可能还在往_pendingBatch里加数据,导致数据丢失
-            try { FlushAsync().GetAwaiter().GetResult(); } catch { }
+            _disposed = true;   // 先关门：心跳/MQTT/串口的所有入队入口（EnqueueDataRecord 等）立即短路
+            try { FlushCoreAsync().GetAwaiter().GetResult(); } catch { }   // 再扫地：专用内核不看 _disposed
+
             // 退订注入服务的接线（不 Dispose 注入进来的服务——其生命周期由 DI 容器负责）
-            if (_serialService != null) _serialService.DataReceived -= OnSerialRawData;
+            if (_mqttService != null)
+            {
+                _mqttService.MessageReceived -= OnMqttMessageReceived;
+                _mqttService.Disconnected -= OnMqttDisconnected;
+            }
+            if (_serialService != null)
+            {
+                _serialService.DataReceived -= OnSerialRawData;
+                _serialService.ConnectionStateChanged -= OnSerialConnectionStateChanged;
+            }
             if (_frameParser != null) _frameParser.FrameParsed -= OnFrameParsed;
-            _disposed = true;
         }
         #endregion
 

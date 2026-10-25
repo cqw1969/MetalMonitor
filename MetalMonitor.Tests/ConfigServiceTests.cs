@@ -146,5 +146,52 @@ namespace MetalMonitor.Tests
             Assert.Equal("COM3", reloaded.SerialPortName);
             Assert.Contains("\"Serial\"", File.ReadAllText(_configPath));
         }
+
+        // ===== T4.1：链路看门狗与指标陈旧阈值（启动只读）=====
+
+        /// <summary>
+        /// 缺省值：未配置时看门狗与陈旧阈值均为 3 秒。
+        /// </summary>
+        [Fact]
+        public void SerialTimeouts_MissingInConfig_FallBackToThreeSeconds()
+        {
+            var svc = new ConfigService(_configPath);
+
+            Assert.Equal(3, svc.SerialWatchdogSeconds);
+            Assert.Equal(3, svc.MetricStaleSeconds);
+        }
+
+        /// <summary>
+        /// 自定义值：手工编辑 config.json 后重启生效。
+        /// </summary>
+        [Fact]
+        public void SerialTimeouts_CustomValues_ReadFromJson()
+        {
+            File.WriteAllText(_configPath,
+                "{\"Serial\":{\"PortName\":\"\",\"NodeRouting\":{},\"WatchdogSeconds\":5,\"StaleSeconds\":8}}");
+
+            var svc = new ConfigService(_configPath);
+
+            Assert.Equal(5, svc.SerialWatchdogSeconds);
+            Assert.Equal(8, svc.MetricStaleSeconds);
+        }
+
+        /// <summary>
+        /// 非法值（0 / 负数 / 过大）统一回退 3，避免 0 秒看门狗造成每秒误报。
+        /// </summary>
+        [Theory]
+        [InlineData(0, 0)]
+        [InlineData(-5, -5)]
+        [InlineData(999, 999)]
+        public void SerialTimeouts_InvalidValues_FallBackToThreeSeconds(int watchdog, int stale)
+        {
+            File.WriteAllText(_configPath,
+                $"{{\"Serial\":{{\"PortName\":\"\",\"NodeRouting\":{{}},\"WatchdogSeconds\":{watchdog},\"StaleSeconds\":{stale}}}}}");
+
+            var svc = new ConfigService(_configPath);
+
+            Assert.Equal(3, svc.SerialWatchdogSeconds);
+            Assert.Equal(3, svc.MetricStaleSeconds);
+        }
     }
 }

@@ -41,7 +41,7 @@ namespace MetalMonitor.Core
     /// <summary>
     /// MQTT 消息到达事件参数：携带消息主题与字符串载荷。
     /// </summary>
-    public class MqttMessageReceivedEventArgs : EventArgs
+    public sealed class MqttMessageReceivedEventArgs : EventArgs
     {
         /// <summary>消息来源主题</summary>
         public string Topic { get; }

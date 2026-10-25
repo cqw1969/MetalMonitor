@@ -116,7 +116,7 @@ namespace MetalMonitor.UI
             var deviceService = _serviceProvider.GetRequiredService<IDeviceService>() as DeviceService;
             if (deviceService != null)
             {
-                await deviceService.InitializeMqttAsync();
+                await deviceService.InitializeDataSourceAsync();
             }
 
             var viewModel = _serviceProvider.GetRequiredService<MainViewModel>();

@@ -203,7 +203,7 @@ NODE_ID：0x00 单节点/未分配（当前固件固定值）；上位机按启�
 | # | 位置（文件 · 方法） | 问题 | 建议改法 |
 |---|---|---|---|
 | D5 | DeviceService · `OnMqttMessageReceived` | `catch {}` 静默吞掉所有解析异常，坏消息无日志无计数；T3 串口坏帧接入后排障会更难 | 至少走 RollingFileLogger 记一条 + 维护坏帧计数（可暴露给 UI 状态栏） |
-| D6 | MainViewModel · `BrowseForFolder` 及 IFileOpenDialog/IShellItem COM 声明（约 L351-691） | 文件夹选择 P/Invoke 占 VM 一半篇幅，职责越界；且 COM interop 不可跨平台 | 抽 `Services/IFolderBrowserService`（Windows 实现放 UI 层），VM 只依赖接口 |
+| ✅ D6 | MainViewModel · `BrowseForFolder` 及 IFileOpenDialog/IShellItem COM 声明（约 L351-691） | 文件夹选择 P/Invoke 占 VM 一半篇幅，职责越界；且 COM interop 不可跨平台 | 抽 `Services/IFolderBrowserService`（Windows 实现放 UI 层），VM 只依赖接口 | **2026-10-23 已执行**：用 .NET 8 `OpenFolderDialog` 替换全部 351 行 COM 声明，编译 0 错、测试 84/84 |
 | D7 | DeviceService · `_lastSimValues` | 模拟值上一值缓存只增不减，设备/指标删除后键残留，长跑内存泄漏 | SyncDevices 增量同步后顺带清理不存在的 deviceId 键；或设备删除时主动清 |
 | D8 | DeviceService · `OnMqttMessageReceived` | `JsonSerializer.Deserialize<MqttDeviceData>(e.Payload)` 用默认选项，每条消息重复构建序列化元数据，**违反项目"JsonSerializerOptions 缓存为 static readonly"约定** | 提 `private static readonly JsonSerializerOptions s_jsonOptions`（或直接用无选项重载+源生成器），与 ConfigService 对齐 |
 | D9 | AlarmService · `CheckAndNotify` | 内部又调一次 `ShouldAlarm`，与调用方刚做的判定重复查一次字典锁 | 调用方把已算好的 `currentAlarm` 结果传入（改签名需同步两条数据通路） |

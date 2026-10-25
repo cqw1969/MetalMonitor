@@ -17,6 +17,47 @@
                     <Border Width="4" Height="30" Background="#FF6CD46C" CornerRadius="2" Margin="0,0,10,0"/>
                     <TextBlock Text="设备实时监控系统" FontSize="28" FontWeight="Bold" Foreground="#FFE0E0E0"/>
                     <TextBlock Text="v1.0" FontSize="14" Foreground="#FF666677" Margin="10,0,0,0"/>
+                    <!-- 状态区：数据源状态（连接结果）与链路健康（是否真在送数）两行并列，正交不合并 -->
+                    <StackPanel VerticalAlignment="Center" Margin="15,0,0,0">
+                        <TextBlock FontSize="11">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="#FF6CD46C"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CurrentDataSourceState}" Value="Faulted">
+                                            <Setter Property="Foreground" Value="#FFFF6B6B"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding CurrentDataSourceState}" Value="Unavailable">
+                                            <Setter Property="Foreground" Value="#FF777788"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                            <Run Text="数据源："/><Run Text="{Binding DataSourceStateText, Mode=OneWay}"/>
+                        </TextBlock>
+                        <TextBlock FontSize="11" Margin="0,2,0,0">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="#FF777788"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding CurrentLinkHealth}" Value="Healthy">
+                                            <Setter Property="Foreground" Value="#FF6CD46C"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding CurrentLinkHealth}" Value="Recovering">
+                                            <Setter Property="Foreground" Value="#FFFFB86B"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding CurrentLinkHealth}" Value="NoValidFrame">
+                                            <Setter Property="Foreground" Value="#FFFF6B6B"/>
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding CurrentLinkHealth}" Value="NoSignal">
+                                            <Setter Property="Foreground" Value="#FFFF6B6B"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                            <Run Text="链路："/><Run Text="{Binding LinkHealthText, Mode=OneWay}"/>
+                        </TextBlock>
+                    </StackPanel>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="10,0,0,0">
                     <Button Content="设备管理" Click="OnOpenDeviceManagement" Background="#FF6CD46C" Foreground="#FF161622" Padding="12,6" FontSize="12" FontWeight="SemiBold" Margin="0,0,10,0" Cursor="Hand"/>

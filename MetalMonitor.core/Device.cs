@@ -27,8 +27,20 @@ namespace MetalMonitor.Core
         /// <summary>各指标的报警状态（指标名 -&gt; 是否报警）；任一指标报警则设备整体报警</summary>
         private readonly ConcurrentDictionary<string, bool> _metricAlarms = new();
 
+        /// <summary>各指标最近一次写入值的单调毫秒时刻（指标名 -&gt; TickCount64）；0/缺失表示从未写入</summary>
+        private readonly ConcurrentDictionary<string, long> _metricValueMs = new();
+
+        /// <summary>各指标当前的数据质量码（指标名 -&gt; 质量）；缺失按 <see cref="MetricQuality.Bad"/> 解释</summary>
+        private readonly ConcurrentDictionary<string, MetricQuality> _metricQuality = new();
+
+        /// <summary>质量码跃迁串行化锁：保证"比较旧值 + 写入 + 判定是否通知"原子，避免重复通知</summary>
+        private readonly object _qualityLock = new();
+
         /// <summary>指标值更新事件：参数依次为指标名、最新值；由 SetMetricValue 在写入后触发</summary>
         public event Action<string, double>? MetricValueChanged;
+
+        /// <summary>指标质量码跃迁事件：参数依次为指标名、新质量码；仅在实际变化时触发</summary>
+        public event Action<string, MetricQuality>? MetricQualityChanged;
 
         /// <summary>设备唯一标识（Guid 字符串），数据库主键，同步设备时以此判同</summary>
         public string Id
@@ -104,6 +116,8 @@ namespace MetalMonitor.Core
         public void SetMetricValue(string metricName, double value)
         {
             _metricValues[metricName] = value;
+            _metricValueMs[metricName] = Environment.TickCount64;   // 记录新鲜度时刻（单调时钟）
+            SetMetricQuality(metricName, MetricQuality.Good);        // 写值瞬间即恢复可信，零延迟
             MetricValueChanged?.Invoke(metricName, value);
             OnPropertyChanged(nameof(MetricValues));
         }
@@ -116,6 +130,44 @@ namespace MetalMonitor.Core
         public double GetMetricValue(string metricName)
         {
             return _metricValues.TryGetValue(metricName, out var v) ? v : double.NaN;
+        }
+
+        /// <summary>
+        /// 读取某指标最近一次写入值的单调毫秒时刻。
+        /// </summary>
+        /// <param name="metricName">指标名</param>
+        /// <returns>写入时刻（TickCount64）；从未写入过返回 0</returns>
+        public long GetMetricValueMs(string metricName)
+        {
+            return _metricValueMs.TryGetValue(metricName, out var ms) ? ms : 0;
+        }
+
+        /// <summary>
+        /// 写入某指标的数据质量码（由服务层心跳的降级扫描调用）。
+        /// </summary>
+        /// <param name="metricName">指标名</param>
+        /// <param name="quality">新的质量码</param>
+        /// <remarks>同值不触发 <see cref="MetricQualityChanged"/>，避免每秒心跳造成通知风暴</remarks>
+        public void SetMetricQuality(string metricName, MetricQuality quality)
+        {
+            lock (_qualityLock)
+            {
+                if (_metricQuality.TryGetValue(metricName, out var existing) && existing == quality)
+                    return;
+                _metricQuality[metricName] = quality;
+            }
+            // 事件在锁外触发：订阅方回调不得延长持锁时间，也避免重入死锁
+            MetricQualityChanged?.Invoke(metricName, quality);
+        }
+
+        /// <summary>
+        /// 读取某指标当前的数据质量码。
+        /// </summary>
+        /// <param name="metricName">指标名</param>
+        /// <returns>当前质量码；从未写入过视为 <see cref="MetricQuality.Bad"/></returns>
+        public MetricQuality GetMetricQuality(string metricName)
+        {
+            return _metricQuality.TryGetValue(metricName, out var q) ? q : MetricQuality.Bad;
         }
 
         /// <summary>所有指标当前值的只读快照（供 UI 绑定）；底层为实时字典，读取时反映最新内容</summary>

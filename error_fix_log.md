@@ -20,6 +20,7 @@
 - **文件**: `MetalMonitor.UI/ViewModels/MainViewModel.cs`、`MetalMonitor.UI/ViewModels/DeviceCardViewModel.cs` 等
 - **成因**: 事件订阅后未取消订阅，`System.Timers.Timer` 未释放，导致对象无法被 GC 回收
 - **解决方法**: 实现 `IDisposable` 接口，在 `Dispose` 中取消事件订阅（`-=`）并释放 Timer；`MainViewModel` 和 `DeviceCardViewModel` 均实现 `IDisposable`
+- **⚠️ 关联复核（2026-10-24，第 2 次同类）**: `DeviceService` 同样只退订了串口两个事件，`MessageReceived` / `Disconnected` 自订阅起从未退订（详见 #38）。说明本条的教训当时只落实到 ViewModel 层，服务层未同步——**凡订阅必配对退订，应按"订阅处同一屏内能搜到退订"自查**
 
 ### 3. DeviceService 中 Clear() 与定时器 foreach 并发触发 InvalidOperationException
 
@@ -526,5 +527,37 @@
   - 变通提示：文档与接口都能保持不变而下层时序剧变，是"双轨/暂存"类重构的典型特征——**契约不只写在签名上，也写在使用顺序里**
 - **关联**: #33（状态机转移重接）/ #34（类型名遮蔽）——同为 T3.4 改造期缺陷；本条是三者中唯一"测试先红、暴露设计契约已变"的良性信号（另两条若漏检则运行时静默失效）
 - **最后校验**: 2026-10-19 修复后 dotnet test 79/79 通过
+
+### 37. 有界集合裁剪后索引滞后（Add 传入的 index 是裁剪前的 Count）
+
+- **时间**: 2026-10-23 00:03:08（STEP-4 首次 `dotnet test` 即红）
+- **文件**: `MetalMonitor.core/Collections/BoundedObservableCollection.cs`：`InsertItem`（行号随迭代变动，按方法名定位）
+- **现象**: 用例 `Add_BeyondCapacity_KeepsNewestItems` 抛 `ArgumentOutOfRangeException: Index must be within the bounds of the List. (Parameter 'index')`，84 个用例中 1 个失败
+- **根本原因**: `ObservableCollection<T>.Add` 的实现是 `InsertItem(Count, item)`——index 在进入重写方法时已按**裁剪前**的 Count 算好。方法内先 `RemoveItem(0)` 使 Count 减 1，随后仍用旧 index 调用 `base.InsertItem`，索引越界
+- **解决方法**: 记录本次移除条数 `removed`，裁剪后执行 `index = Math.Max(0, index - removed)` 再插入；3 个单测全绿，84/84
+- **教训/最佳实践**: 在"先删后插"的复合操作里，任何**先计算、后变更**的索引都会失效——索引是位置快照，不是稳定引用。此缺陷由测试先行暴露，从写错到定位不到一分钟，是"先写断言再写实现"的直接收益
+- **关联**: #35（同为测试先行暴露的索引/键空间类错误）
+- **最后校验**: 2026-10-23 修复后 dotnet test 84/84 通过
+
+### 38. Dispose 冲刷后到置位之间的数据丢失窗口 + MQTT 事件未退订
+
+- **时间**: 2026-10-24（STEP-7，外部评审提出后经代码取证确认）
+- **文件**: `MetalMonitor.core/Services/DeviceService.cs`：`Dispose` / `FlushAsync` / `EnqueueDataRecord`（行号随迭代变动，按方法名定位）；`MetalMonitor.UI/App.xaml.cs`：启动调用点（改名同步）
+- **现象**（静态缺陷，非运行时崩溃）:
+  1. `Dispose` 先 `FlushAsync()` 冲刷、最后才 `_disposed = true`；两者之间后台线程仍可通过 `EnqueueDataRecord`（其门卫查 `_disposed`）入队，新记录随对象回收静默丢失
+  2. `Dispose` 只退订了串口 `DataReceived` / `FrameParsed`，构造函数里订阅的 `MessageReceived` / `Disconnected` 从未退订，MQTT 服务持续持有本对象委托，回调可打到已释放对象且本对象无法被 GC 回收
+- **根本原因**:
+  - **顺序错误**：清理动作（冲刷）与阻断动作（置位）顺序颠倒。正确语义应是"停止接收 → 排空存量 → 释放引用"
+  - **门卫互斥**：`FlushAsync` 自身第一行就查 `_disposed`，因此"把置位提前"这种直觉修法会让冲刷被自己的门卫挡住，反而丢掉整批缓冲——**必须把带门卫的公开入口与不带门卫的冲刷内核拆开**
+  - **平台迁移风险**：`_disposed` 由 UI 线程写、MQTT/串口后台线程读，无 `volatile` 时可见性无保证（x86 强内存模型下少见于事故，ARM 弱内存模型下会真实暴露）
+  - **事件泄漏**：订阅与退订不在同一处维护，改为"按能力成对声明退订"
+- **解决方法**:
+  1. `_disposed` 加 `volatile`（只保证可见性，不替代锁）
+  2. `FlushAsync` 拆为公开门卫（只查 `_disposed`）+ 私有 `FlushCoreAsync`（只查 `_databaseService == null`，不看释放标记）
+  3. `Dispose` 顺序改为：`_disposed = true`（阻断所有入队路径）→ `FlushCoreAsync` 兜底排空 → 成对退订 MQTT 两个事件 + 串口两个事件
+  4. `InitializeMqttAsync` 改名 `InitializeDataSourceAsync`（其首段处理串口，名实不符），同步更新 `App.xaml.cs` 调用点与注释
+- **关联**: #2（事件订阅未取消，同类第 2 次，已在 #2 下登记复核）/ #30（Dispose 死锁风险，同属生命周期路径）/ #36（管线重构改变时序契约）
+- **教训/最佳实践**: 凡"有缓冲 + 有后台线程"的服务，关闭流程一律遵循**两阶段关闭**：先立旗标阻断入队，再排空存量，最后退订/释放；凡是门卫，只放在公开入口，内核必须能绕过它。验证手段是既有用例 `Dispose_FlushesRemainingBuffer`（覆盖"置位后仍能冲刷"这一关键分支）
+- **最后校验**: 2026-10-24 修复后 `dotnet test` 84/84 通过，`dotnet build` 无 CS 警告（仅存量的 NU1701 包兼容提示）
 
 

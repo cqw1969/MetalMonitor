@@ -63,6 +63,7 @@ namespace MetalMonitor.UI.ViewModels
 
             Device.MetricValueChanged += OnMetricValueChanged;
             Device.PropertyChanged += OnDevicePropertyChanged;
+            Device.MetricQualityChanged += OnMetricQualityChanged;
 
             _lineSeries = CreateLineSeries();
             _alarmSeries = CreateAlarmSeries();
@@ -150,6 +151,9 @@ namespace MetalMonitor.UI.ViewModels
         // 当前指标是否处于报警状态
         public bool IsMetricAlarming => Device.IsMetricAlarming(_metricName);
 
+        /// <summary>获取当前指标的数据质量码（良好/陈旧/不可信），驱动数值颜色与质量角标；从未写过为 Bad。</summary>
+        public MetricQuality CurrentMetricQuality => Device.GetMetricQuality(_metricName);
+
         /// <summary>
         /// 获取数值显示文本：指标停用或无数值（NaN）时显示“--”，否则保留一位小数。
         /// </summary>
@@ -187,6 +191,7 @@ namespace MetalMonitor.UI.ViewModels
             OnPropertyChanged(nameof(CurrentUnit));
             OnPropertyChanged(nameof(IsMetricActive));
             OnPropertyChanged(nameof(IsMetricAlarming));
+            OnPropertyChanged(nameof(CurrentMetricQuality));
             OnPropertyChanged(nameof(ValueText));
         }
 
@@ -318,6 +323,31 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         /// <summary>
+        /// 设备指标质量变更处理：仅当变更的是当前展示指标时刷新质量属性，驱动数值颜色与角标。
+        /// </summary>
+        /// <param name="metricName">质量变更的指标名称。</param>
+        /// <param name="quality">新的质量码（良好/陈旧/不可信）。</param>
+        /// <remarks>
+        /// 事件由心跳降级扫描或写值路径触发（后台线程），非 UI 线程时通过 Dispatcher 异步封送；
+        /// Core 侧同值短路仅跃迁触发。切指标瞬间被旧名过滤的事件无害——切换本身已在
+        /// <see cref="RefreshMetricDisplay"/> 中刷新质量属性。
+        /// </remarks>
+        // 设备指标质量变更（心跳线程触发，需切回 UI 线程）
+        private void OnMetricQualityChanged(string metricName, MetricQuality quality)
+        {
+            if (metricName != _metricName) return;
+
+            if (Application.Current == null) return;
+            if (!Application.Current.Dispatcher.CheckAccess())
+            {
+                Application.Current.Dispatcher.BeginInvoke(() => OnMetricQualityChanged(metricName, quality));
+                return;
+            }
+
+            OnPropertyChanged(nameof(CurrentMetricQuality));
+        }
+
+        /// <summary>
         /// 设备通用属性变更处理：报警总状态变化时刷新报警属性，启用状态变化时刷新暂停遮罩属性。
         /// </summary>
         /// <param name="sender">事件发送者（设备对象），可能为 null。</param>
@@ -372,6 +402,7 @@ namespace MetalMonitor.UI.ViewModels
             {
                 Device.MetricValueChanged -= OnMetricValueChanged;
                 Device.PropertyChanged -= OnDevicePropertyChanged;
+                Device.MetricQualityChanged -= OnMetricQualityChanged;
             }
 
             _disposed = true;

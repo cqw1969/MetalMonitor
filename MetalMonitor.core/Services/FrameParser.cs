@@ -266,7 +266,7 @@ namespace MetalMonitor.Core
     /// 传感器数据帧：FrameParser 解析后的结构化结果。
     /// </summary>
     /// <remarks>对应 PROTOCOL.md v0.9 CMD 0x01 上行数据帧的字段。</remarks>
-    public class SensorDataFrame : EventArgs
+    public sealed class SensorDataFrame : EventArgs
     {
         ///<summary> 节点 ID：0x00=单节点/未分配（当前在用值），0x01~0xFE=多节点地址，0xFF=保留（见 PROTOCOL.md §2.1）。</summary>
         public byte NodeId { get; }

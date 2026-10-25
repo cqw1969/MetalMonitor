@@ -5,6 +5,8 @@
   "DataSource": "MQTT",
   "Serial": {
     "PortName": "COM6",
-    "NodeRouting": {}
+    "NodeRouting": {},
+    "WatchdogSeconds": 3,
+    "StaleSeconds": 3
   }
 }

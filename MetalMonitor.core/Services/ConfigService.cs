@@ -120,6 +120,22 @@ namespace MetalMonitor.Core
         }
 
         /// <summary>
+        /// 串口链路看门狗周期（秒）：超过该时长无有效帧即判定链路异常。
+        /// 启动只读（沿用 <see cref="GetNodeRoutingSnapshot"/> 范式），运行中修改需重启生效；
+        /// 非正值或超过 60 的异常值回退默认 3 秒。
+        /// </summary>
+        public int SerialWatchdogSeconds => NormalizeSeconds(_config.Serial?.WatchdogSeconds);
+
+        /// <summary>
+        /// 指标陈旧阈值（秒）：指标值超过该时长未更新即降级质量码。
+        /// 启动只读；非正值或超过 60 的异常值回退默认 3 秒。
+        /// </summary>
+        public int MetricStaleSeconds => NormalizeSeconds(_config.Serial?.StaleSeconds);
+
+        /// <summary>把配置中的秒数归一化到合法区间 [1, 60]，非法/缺失回退 3。</summary>
+        private static int NormalizeSeconds(int? value) => value is > 0 and <= 60 ? value.Value : 3;
+
+        /// <summary>
         /// 以自动定位的 config.json 路径初始化配置服务，并立即从磁盘加载配置。
         /// </summary>
         /// <remarks>定位规则见 <see cref="FindConfigPath"/>：开发期取解决方案目录，部署期取程序运行目录。</remarks>
@@ -244,6 +260,10 @@ namespace MetalMonitor.Core
             public string PortName { get; set; } = string.Empty;
             /// <summary>NODE_ID 路由表：JSON 键 = NODE_ID 十六进制字符串（如 "2A"），值 = 设备名；只读段，程序永不写。</summary>
             public Dictionary<string, string> NodeRouting { get; set; } = new();
+            /// <summary>串口链路看门狗周期（秒），默认 3；启动只读，运行中修改不生效。</summary>
+            public int WatchdogSeconds { get; set; } = 3;
+            /// <summary>指标陈旧阈值（秒），默认 3；启动只读，运行中修改不生效。</summary>
+            public int StaleSeconds { get; set; } = 3;
         }
     }
 }

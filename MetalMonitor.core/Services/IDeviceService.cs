@@ -24,6 +24,12 @@ namespace MetalMonitor.Core
         /// <summary>数据源状态变更通知：切换完成即触发（成功与失败都会），UI 据此提示或调整选项可用性</summary>
         event EventHandler<DataSourceStateChangedEventArgs>? DataSourceStateChanged;
 
+        /// <summary>当前串口链路健康状态（未选串口/未连接时为 Inactive）；只在跃迁时广播</summary>
+        LinkHealth LinkHealth { get; }
+
+        /// <summary>链路健康变更通知：仅在状态真正跃迁时触发（每秒心跳不重复广播同值）</summary>
+        event EventHandler<LinkHealthChangedEventArgs>? LinkHealthChanged;
+
         /// <summary>获取全部设备的快照列表（线程安全拷贝）</summary>
         /// <returns>设备列表副本；调用方可自由遍历，不受后续集合增删影响</returns>
         List<Device> GetDevices();

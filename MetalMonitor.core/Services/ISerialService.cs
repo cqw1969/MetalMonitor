@@ -39,7 +39,7 @@ namespace MetalMonitor.Core
     /// </summary>
     /// <remarks>命名避开 <c>System.IO.Ports.SerialDataReceivedEventArgs</c> 冲突；
     /// 载荷可能为半帧或粘包，由上层 FrameParser 组装。</remarks>
-    public class SerialRawDataEventArgs : EventArgs
+    public sealed class SerialRawDataEventArgs : EventArgs
     {
         /// <summary>本次接收到的原始字节（未经任何帧解析）。</summary>
         public byte[] Data { get; }

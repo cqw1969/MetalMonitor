@@ -4,7 +4,6 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Timers;
 using System.Windows;
@@ -51,7 +50,7 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         /// <summary>报警与异常日志文本集合（带时间戳），绑定主界面日志列表，仅允许在 UI 线程追加。</summary>
-        public ObservableCollection<string> AlarmLogs { get; set; } = new();
+        public ObservableCollection<string> AlarmLogs { get; set; } = new BoundedObservableCollection<string>(200);
 
         /// <summary>可选指标配置列表（含停用指标，停用后卡片显示灰色失效态），绑定主界面指标下拉框。</summary>
         // 可选指标列表（含停用指标，停用后卡片显示灰色失效态）
@@ -83,6 +82,36 @@ namespace MetalMonitor.UI.ViewModels
 
         /// <summary>获取可选数据来源名称数组（绑定数据源下拉框选项）。</summary>
         public string[] DataSourceOptions => _deviceService.AvailableDataSources;
+
+        /// <summary>当前数据源运行状态（枚举转发，供状态行颜色触发器按值映射）。</summary>
+        public DataSourceState CurrentDataSourceState => _deviceService.State;
+
+        /// <summary>数据源状态显示文本（正常 / 连接失败 / 不可用）。</summary>
+        public string DataSourceStateText => ToStateText(_deviceService.State);
+
+        /// <summary>当前串口链路健康（枚举转发，供状态行颜色触发器按值映射）。</summary>
+        public LinkHealth CurrentLinkHealth => _deviceService.LinkHealth;
+
+        /// <summary>链路健康显示文本（健康 / 等待首帧 / 有字节无有效帧 / 无信号 / 未连接）。</summary>
+        public string LinkHealthText => ToLinkHealthText(_deviceService.LinkHealth);
+
+        /// <summary>数据源状态枚举 → 中文短词（Core 只给枚举，文案翻译是 UI 层职责）。</summary>
+        private static string ToStateText(DataSourceState state) => state switch
+        {
+            DataSourceState.Online => "正常",
+            DataSourceState.Faulted => "连接失败",
+            _ => "不可用"
+        };
+
+        /// <summary>链路健康枚举 → 中文短词（Core 只给枚举，文案翻译是 UI 层职责）。</summary>
+        private static string ToLinkHealthText(LinkHealth health) => health switch
+        {
+            LinkHealth.Healthy => "健康",
+            LinkHealth.Recovering => "等待首帧",
+            LinkHealth.NoValidFrame => "有字节无有效帧",
+            LinkHealth.NoSignal => "无信号",
+            _ => "未连接"
+        };
 
         /// <summary>下拉框当前选中的数据来源名称；setter 中触发异步切换。</summary>
         private string _selectedDataSource;
@@ -128,6 +157,8 @@ namespace MetalMonitor.UI.ViewModels
             _alarmService.AlarmStateChanged += OnAlarmStateChanged;
             // 数据源状态变更（成功/故障/不可用）统一走事件提示，不在切源代码里各写一份日志
             _deviceService.DataSourceStateChanged += OnDataSourceStateChanged;
+            // 链路健康变更（跃迁才广播）：驱动顶栏"链路"状态行
+            _deviceService.LinkHealthChanged += OnLinkHealthChanged;
 
             //Devices = new ObservableCollection<Device>();
             DeviceCardViewModels = new ObservableCollection<DeviceCardViewModel>();
@@ -323,6 +354,8 @@ namespace MetalMonitor.UI.ViewModels
         {
             void Apply()
             {
+                OnPropertyChanged(nameof(CurrentDataSourceState));
+                OnPropertyChanged(nameof(DataSourceStateText));
                 if (e.State == DataSourceState.Online)
                 {
                     AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✓ 数据来源已切换为：{e.SourceDisplay}");
@@ -346,372 +379,51 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         /// <summary>
+        /// 链路健康变更回调：刷新顶栏"链路"状态行的绑定属性。
+        /// </summary>
+        /// <param name="sender">事件发送者（设备服务实例）。</param>
+        /// <param name="e">链路健康变更参数（新状态、数据源显示名、原因）。</param>
+        /// <remarks>
+        /// 事件可能由串口后台线程或心跳线程触发，属性通知需封送回 UI 线程；
+        /// Core 侧已同值短路，仅跃迁触发，不会每秒轰炸。
+        /// </remarks>
+        private void OnLinkHealthChanged(object? sender, LinkHealthChangedEventArgs e)
+        {
+            void Apply()
+            {
+                OnPropertyChanged(nameof(CurrentLinkHealth));
+                OnPropertyChanged(nameof(LinkHealthText));
+            }
+
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher != null && !dispatcher.CheckAccess())
+            {
+                dispatcher.BeginInvoke(Apply);
+            }
+            else
+            {
+                Apply();
+            }
+        }
+
+        /// <summary>
         /// 弹出文件夹选择对话框供用户选择数据库存储路径，选中后异步通知数据库服务更改路径并刷新绑定与日志。
         /// </summary>
         /// <remarks>async void 仅用于 UI 事件直接调用；用户取消选择时不做任何更改。</remarks>
         public async void SelectDatabasePath()
         {
-            var selectedPath = BrowseForFolder("请选择数据库存储路径", 
-                string.IsNullOrEmpty(DatabasePath) ? null : Path.GetDirectoryName(DatabasePath));
-            
-            if (!string.IsNullOrEmpty(selectedPath))
+            // 原实现：手写 IFileOpenDialog COM 互操作（约 350 行），已删；回退见 git 历史
+            var dialog = new Microsoft.Win32.OpenFolderDialog
             {
-                await _databaseService.ChangeDatabasePathAsync(selectedPath);
+                Title = "请选择数据库存储路径",
+                InitialDirectory = string.IsNullOrEmpty(DatabasePath) ? null : Path.GetDirectoryName(DatabasePath)
+            };
+            if (dialog.ShowDialog() == true && !string.IsNullOrEmpty(dialog.FolderName))
+            {
+                await _databaseService.ChangeDatabasePathAsync(dialog.FolderName);
                 OnPropertyChanged(nameof(DatabasePath));
-                AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✓ 数据库路径已更改为：{selectedPath}");
+                AlarmLogs.Add($"[{DateTime.Now:HH:mm:ss}] ✓ 数据库路径已更改为：{dialog.FolderName}");
             }
-        }
-
-        /// <summary>
-        /// 通过 Windows Vista 风格的 IFileOpenDialog COM 接口显示“选择文件夹”对话框。
-        /// </summary>
-        /// <param name="title">对话框标题文本。</param>
-        /// <param name="initialPath">对话框初始定位目录；为 null 或空时使用系统默认位置。</param>
-        /// <returns>用户选中目录的文件系统绝对路径；用户取消或未取得结果时返回 null。</returns>
-        /// <remarks>
-        /// 用户取消对话框时 COM interop 会抛出 <see cref="COMException"/>（HRESULT 为 <see cref="ErrorCancelled"/>），
-        /// 此处将其捕获并视为正常取消返回 null；所有 COM 对象使用后显式 <see cref="Marshal.ReleaseComObject"/> 释放。
-        /// </remarks>
-        private string? BrowseForFolder(string title, string? initialPath = null)
-        {
-            var dialog = (IFileOpenDialog)new FileOpenDialog();
-            dialog.SetOptions(FOS.FOS_PICKFOLDERS | FOS.FOS_FORCEFILESYSTEM);
-            dialog.SetTitle(title);
-
-            if (!string.IsNullOrEmpty(initialPath))
-            {
-                try
-                {
-                    var shellItem = ShellItemFromParsingName(initialPath);
-                    if (shellItem != null)
-                    {
-                        dialog.SetFolder(shellItem);
-                        Marshal.ReleaseComObject(shellItem);
-                    }
-                }
-                catch
-                {
-                }
-            }
-
-            // 用户取消对话框时 Show 返回 ERROR_CANCELLED (0x800704C7)，
-            // COM interop 会将其转为异常抛出，这里捕获并视为正常取消
-            try
-            {
-                dialog.Show(IntPtr.Zero);
-            }
-            catch (COMException ex) when (ex.ErrorCode == ErrorCancelled)
-            {
-                Marshal.ReleaseComObject(dialog);
-                return null;
-            }
-
-            dialog.GetResult(out var item);
-            if (item == null)
-            {
-                Marshal.ReleaseComObject(dialog);
-                return null;
-            }
-
-            item.GetDisplayName(SIGDN.SIGDN_FILESYSPATH, out var path);
-            Marshal.ReleaseComObject(item);
-            Marshal.ReleaseComObject(dialog);
-
-            return path;
-        }
-
-        /// <summary>
-        /// Shell32 P/Invoke：由文件系统绝对路径创建一个 IShellItem 实例，用于把初始目录传给文件夹选择对话框。
-        /// </summary>
-        /// <param name="pszPath">目录或文件的绝对路径（解析名）。</param>
-        /// <param name="pbc">绑定上下文指针，本应用不使用，传 <see cref="IntPtr.Zero"/>。</param>
-        /// <param name="riid">请求接口的 IID（IShellItem 的 GUID）。</param>
-        /// <param name="ppv">输出创建得到的 IShellItem 接口对象。</param>
-        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
-        private static extern void SHCreateItemFromParsingName(
-            [In] string pszPath,
-            [In] IntPtr pbc,
-            [In] ref Guid riid,
-            [Out, MarshalAs(UnmanagedType.Interface)] out IShellItem ppv);
-
-        /// <summary>
-        /// 由文件系统路径创建 IShellItem COM 对象的托管包装。
-        /// </summary>
-        /// <param name="path">目标目录的绝对路径。</param>
-        /// <returns>对应路径的 <see cref="IShellItem"/> 实例。</returns>
-        private IShellItem ShellItemFromParsingName(string path)
-        {
-            var guid = new Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE");
-            SHCreateItemFromParsingName(path, IntPtr.Zero, ref guid, out var item);
-            return item;
-        }
-
-        /// <summary>用户取消通用文件对话框时 Shell 返回的 HRESULT（0x800704C7），对应 winerror.h 的 ERROR_CANCELLED。</summary>
-        // 用户取消对话框时 Shell 返回的 HRESULT，对应 winerror.h 的 ERROR_CANCELLED
-        private const int ErrorCancelled = unchecked((int)0x800704C7);
-
-        /// <summary>
-        /// Windows 通用文件打开对话框（IFileOpenDialog）的 COM 可创建类（CLSID_FileOpenDialog），仅用于 COM interop 声明。
-        /// </summary>
-        [ComImport]
-        [Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
-        private class FileOpenDialog { }
-
-        /// <summary>
-        /// IFileOpenDialog COM 接口的托管互操作声明（方法顺序须与原生 vtable 严格一致），本应用用于弹出文件夹选择对话框。
-        /// </summary>
-        [ComImport]
-        [Guid("D57C7288-D4AD-4768-BE02-9D969532D960")]
-        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IFileOpenDialog
-        {
-            /// <summary>显示模态对话框。</summary>
-            /// <param name="parent">父窗口句柄；无父窗口时传 <see cref="IntPtr.Zero"/>。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void Show([In] IntPtr parent);
-
-            /// <summary>设置文件类型过滤器列表。</summary>
-            /// <param name="cFileTypes">过滤器项数量。</param>
-            /// <param name="rgFilterSpec">过滤器规格数组的非托管指针。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetFileTypes([In] uint cFileTypes, [In] IntPtr rgFilterSpec);
-
-            /// <summary>设置当前选中的文件类型过滤器索引。</summary>
-            /// <param name="iFileType">过滤器从 1 开始的索引。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetFileTypeIndex([In] uint iFileType);
-
-            /// <summary>获取当前选中的文件类型过滤器索引。</summary>
-            /// <param name="piFileType">输出过滤器索引。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetFileTypeIndex(out uint piFileType);
-
-            /// <summary>注册对话框事件接收对象。</summary>
-            /// <param name="pfde">事件接收对象指针。</param>
-            /// <param name="pdwCookie">输出用于退订的 Cookie。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void Advise([In] IntPtr pfde, out uint pdwCookie);
-
-            /// <summary>退订此前通过 Advise 注册的事件接收对象。</summary>
-            /// <param name="dwCookie">Advise 返回的 Cookie。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void Unadvise([In] uint dwCookie);
-
-            /// <summary>设置对话框选项标志（如选择文件夹、强制文件系统）。</summary>
-            /// <param name="fos"><see cref="FOS"/> 选项标志组合。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetOptions([In] FOS fos);
-
-            /// <summary>获取对话框当前选项标志。</summary>
-            /// <param name="pfos">输出当前 <see cref="FOS"/> 标志组合。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetOptions(out FOS pfos);
-
-            /// <summary>设置对话框默认定位文件夹（若记住的最近文件夹不可用则使用）。</summary>
-            /// <param name="psi">默认文件夹的 IShellItem。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetDefaultFolder([In] IShellItem psi);
-
-            /// <summary>强制设置对话框本次打开时定位的文件夹。</summary>
-            /// <param name="psi">目标文件夹的 IShellItem。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetFolder([In] IShellItem psi);
-
-            /// <summary>获取对话框当前定位的文件夹。</summary>
-            /// <param name="ppsi">输出当前文件夹的 IShellItem。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetFolder(out IShellItem ppsi);
-
-            /// <summary>获取对话框中当前选中项（对话框未关闭时也可调用）。</summary>
-            /// <param name="ppsi">输出当前选中项的 IShellItem。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetCurrentSelection(out IShellItem ppsi);
-
-            /// <summary>设置文件名编辑框的初始文本。</summary>
-            /// <param name="pszName">初始文件名。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetFileName([In, MarshalAs(UnmanagedType.LPWStr)] string pszName);
-
-            /// <summary>获取文件名编辑框当前文本。</summary>
-            /// <param name="pszName">输出当前文件名。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
-
-            /// <summary>设置对话框标题文本。</summary>
-            /// <param name="pszTitle">标题文本。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetTitle([In, MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
-
-            /// <summary>设置“确定”按钮文本。</summary>
-            /// <param name="pszText">按钮文本。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetOkButtonLabel([In, MarshalAs(UnmanagedType.LPWStr)] string pszText);
-
-            /// <summary>设置文件名编辑框旁的标签文本。</summary>
-            /// <param name="pszLabel">标签文本。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetFileNameLabel([In, MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
-
-            /// <summary>对话框关闭后获取用户选择的结果项。</summary>
-            /// <param name="ppsi">输出选中项的 IShellItem。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetResult(out IShellItem ppsi);
-
-            /// <summary>在对话框导航窗格中添加一个自定义位置。</summary>
-            /// <param name="psi">自定义位置的 IShellItem。</param>
-            /// <param name="fdap">位置放置标识（FDAP 枚举值）。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void AddPlace([In] IShellItem psi, int fdap);
-
-            /// <summary>设置默认文件扩展名。</summary>
-            /// <param name="pszDefaultExtension">默认扩展名文本（可含或不含句点）。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetDefaultExtension([In, MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
-
-            /// <summary>以指定 HRESULT 关闭对话框。</summary>
-            /// <param name="hr">关闭结果 HRESULT。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void Close(int hr);
-
-            /// <summary>设置 GUID 以将对话框状态（如最近位置）与特定调用方关联。</summary>
-            /// <param name="guid">客户端 GUID。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetClientGuid([In] ref Guid guid);
-
-            /// <summary>清除持久化的对话框状态信息。</summary>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void ClearClientData();
-
-            /// <summary>设置对话框过滤器（IShellItemFilter）。</summary>
-            /// <param name="pFilter">过滤器对象指针。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void SetFilter([In] IntPtr pFilter);
-
-            /// <summary>多选模式下获取全部选中项。</summary>
-            /// <param name="ppenum">输出 IShellItemArray 枚举器指针。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetResults(out IntPtr ppenum);
-
-            /// <summary>获取当前在对话框中选中的多项（未关闭时）。</summary>
-            /// <param name="ppsai">输出选中项数组指针。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetSelectedItems(out IntPtr ppsai);
-        }
-
-        /// <summary>
-        /// IShellItem COM 接口的托管互操作声明，表示 Shell 命名空间中的一个项（此处为文件夹），用于读取其文件系统路径。
-        /// </summary>
-        [ComImport]
-        [Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE")]
-        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-        private interface IShellItem
-        {
-            /// <summary>将 Shell 项绑定到指定处理器以获取目标接口。</summary>
-            /// <param name="pbc">绑定上下文指针。</param>
-            /// <param name="bhid">处理器类别的 GUID。</param>
-            /// <param name="riid">请求接口的 IID。</param>
-            /// <param name="ppv">输出绑定得到的接口指针。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void BindToHandler([In] IntPtr pbc, [In] ref Guid bhid, [In] ref Guid riid, [Out, MarshalAs(UnmanagedType.Interface)] out IntPtr ppv);
-
-            /// <summary>获取父级 Shell 项。</summary>
-            /// <param name="ppsi">输出父项的 IShellItem。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetParent([Out, MarshalAs(UnmanagedType.Interface)] out IShellItem ppsi);
-
-            /// <summary>按指定显示名称类型获取项的名称（本应用用其获取文件系统绝对路径）。</summary>
-            /// <param name="sigdnName"><see cref="SIGDN"/> 名称类型。</param>
-            /// <param name="ppszName">输出名称字符串。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetDisplayName([In] SIGDN sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
-
-            /// <summary>获取 Shell 项的指定属性位。</summary>
-            /// <param name="sfgaoMask">请求的 SFGAO 属性掩码。</param>
-            /// <param name="psfgaoAttribs">输出实际具备的属性位。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void GetAttributes([In] uint sfgaoMask, out uint psfgaoAttribs);
-
-            /// <summary>与另一个 Shell 项比较。</summary>
-            /// <param name="psi">用于比较的另一个 Shell 项。</param>
-            /// <param name="hint">比较提示（SICHINT 标志）。</param>
-            /// <param name="piOrder">输出比较结果：负数表示此项在前，正数在后，0 表示相同。</param>
-            [MethodImpl(MethodImplOptions.InternalCall, MethodCodeType = MethodCodeType.Runtime)]
-            void Compare([In] IShellItem psi, [In] uint hint, out int piOrder);
-        }
-
-        /// <summary>
-        /// 通用文件对话框选项标志（对应原生 FILEOPENDIALOGOPTIONS / FOS）。
-        /// </summary>
-        [Flags]
-        private enum FOS
-        {
-            /// <summary>覆盖已有文件时提示。</summary>
-            FOS_OVERWRITEPROMPT = 0x2,
-            /// <summary>严格按文件类型过滤器限制。</summary>
-            FOS_STRICTFILETYPES = 0x4,
-            /// <summary>不改变当前工作目录。</summary>
-            FOS_NOCHANGEDIR = 0x8,
-            /// <summary>选择文件夹而非文件。</summary>
-            FOS_PICKFOLDERS = 0x20,
-            /// <summary>仅返回文件系统中的真实项。</summary>
-            FOS_FORCEFILESYSTEM = 0x40,
-            /// <summary>允许选择非存储类 Shell 项。</summary>
-            FOS_ALLNONSTORAGEITEMS = 0x80,
-            /// <summary>不校验文件内容（防特殊文件校验失败）。</summary>
-            FOS_NOVALIDATE = 0x100,
-            /// <summary>允许多选。</summary>
-            FOS_ALLOWMULTISELECT = 0x200,
-            /// <summary>路径必须已存在。</summary>
-            FOS_PATHMUSTEXIST = 0x800,
-            /// <summary>文件必须已存在。</summary>
-            FOS_FILEMUSTEXIST = 0x1000,
-            /// <summary>目标不存在时提示创建。</summary>
-            FOS_CREATEPROMPT = 0x2000,
-            /// <summary>共享冲突时重试并给出提示。</summary>
-            FOS_SHAREAWARE = 0x4000,
-            /// <summary>返回的选中项不允许只读。</summary>
-            FOS_NOREADONLYRETURN = 0x8000,
-            /// <summary>不测试创建文件是否成功。</summary>
-            FOS_NOTESTFILECREATE = 0x10000,
-            /// <summary>隐藏最近使用位置列表。</summary>
-            FOS_HIDEMRUPLACES = 0x20000,
-            /// <summary>隐藏固定到导航窗格的位置。</summary>
-            FOS_HIDEPINNEDPLACES = 0x40000,
-            /// <summary>不解析快捷方式，直接返回 .lnk 文件本身。</summary>
-            FOS_NODEREFERENCELINKS = 0x100000,
-            /// <summary>“确定”按钮需要用户进行交互后才可用。</summary>
-            FOS_OKBUTTONNEEDSINTERACTION = 0x200000,
-            /// <summary>不将本次选择加入最近使用记录。</summary>
-            FOS_DONTADDTORECENT = 0x2000000,
-            /// <summary>强制显示预览窗格。</summary>
-            FOS_FORCEPREVIEWPANEON = 0x4000000,
-            /// <summary>支持按流方式传递的项。</summary>
-            FOS_SUPPORTSTREAMABLEITEMS = 0x8000000
-        }
-
-        /// <summary>
-        /// Shell 项显示名称类型（对应原生 SIGDN），本应用使用文件系统路径类型。
-        /// </summary>
-        private enum SIGDN : uint
-        {
-            /// <summary>桌面相对的可编辑名称。</summary>
-            SIGDN_DESKTOPABSOLUTEEDITING = 0x8004c000,
-            /// <summary>桌面相对的解析名。</summary>
-            SIGDN_DESKTOPABSOLUTEPARSING = 0x80028000,
-            /// <summary>文件系统绝对路径。</summary>
-            SIGDN_FILESYSPATH = 0x80058000,
-            /// <summary>常规显示名称。</summary>
-            SIGDN_NORMALDISPLAY = 0,
-            /// <summary>相对父级的名称。</summary>
-            SIGDN_PARENTRELATIVE = 0x80080001,
-            /// <summary>相对父级、可编辑的名称。</summary>
-            SIGDN_PARENTRELATIVEEDITING = 0x80031001,
-            /// <summary>用于地址栏的相对父级名称。</summary>
-            SIGDN_PARENTRELATIVEFORADDRESSBAR = 0x8007c001,
-            /// <summary>相对父级的解析名。</summary>
-            SIGDN_PARENTRELATIVEPARSING = 0x80018001,
-            /// <summary>URL 形式的名称。</summary>
-            SIGDN_URL = 0x80068000
         }
 
         #region IDisposable
@@ -751,6 +463,9 @@ namespace MetalMonitor.UI.ViewModels
 
                 // 取消数据源状态事件订阅
                 _deviceService.DataSourceStateChanged -= OnDataSourceStateChanged;
+
+                // 取消链路健康事件订阅
+                _deviceService.LinkHealthChanged -= OnLinkHealthChanged;
 
                 // 释放所有 DeviceCardViewModel
                 foreach (var vm in DeviceCardViewModels)

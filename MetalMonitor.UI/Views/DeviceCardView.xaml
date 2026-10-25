@@ -53,11 +53,41 @@
                                     <DataTrigger Binding="{Binding IsMetricActive}" Value="False">
                                         <Setter Property="Foreground" Value="#FF777788"/>
                                     </DataTrigger>
+                                    <!-- 质量码染色：数据陈旧→琥珀、不可信→灰；可信度提示优先于报警色 -->
+                                    <DataTrigger Binding="{Binding CurrentMetricQuality}" Value="Stale">
+                                        <Setter Property="Foreground" Value="#FFFFB86B"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding CurrentMetricQuality}" Value="Bad">
+                                        <Setter Property="Foreground" Value="#FF777788"/>
+                                    </DataTrigger>
                                 </Style.Triggers>
                             </Style>
                         </TextBlock.Style>
                         <Run Text="{Binding ValueText, Mode=OneWay}"/>
                         <Run Text="{Binding CurrentUnit, Mode=OneWay}" FontSize="14"/>
+                    </TextBlock>
+
+                    <!-- 质量角标：与数值同行叠加右上角，Good 时隐藏 -->
+                    <TextBlock Grid.Row="0"
+                               HorizontalAlignment="Right" VerticalAlignment="Top"
+                               FontSize="9" FontWeight="SemiBold" Padding="3,1">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding CurrentMetricQuality}" Value="Stale">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                        <Setter Property="Text" Value="陈旧"/>
+                                        <Setter Property="Foreground" Value="#FFFFB86B"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding CurrentMetricQuality}" Value="Bad">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                        <Setter Property="Text" Value="不可信"/>
+                                        <Setter Property="Foreground" Value="#FF9999AA"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
                     </TextBlock>
 
                     <!-- 实时曲线迷你图 -->
