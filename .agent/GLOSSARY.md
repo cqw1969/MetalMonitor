@@ -21,5 +21,13 @@
 - **数据质量码（MetricQuality）**：给单个设备的单个数值贴的可信度标签。比方：体检报告每个指标后标"本次有效 / 上次结果 / 已失效"。本项目 Good=新鲜、Stale=超期但无故障证据、Bad=从未收到或链路故障期间超期；写值瞬间置 Good，心跳只降级。
 - **单调时钟（Environment.TickCount64）**：只增不减的毫秒计时器，不受用户改系统时间影响。本项目所有"多久没数据"的判据都用它，避免时间跳变造成误报/漏报。
 - **ViewModel 翻译层**：Core 的枚举（LinkHealth/MetricQuality）只表达语义，不携带文案与颜色；翻译成中文短词在 ViewModel（ToStateText/ToLinkHealthText），翻译成颜色在 XAML DataTrigger。比方：Core 说"电压 220V"，UI 决定显示成绿色数字还是红色图标——换皮肤不改 Core。
+- **Interlocked（原子操作）**：把"读-判断-改"合成一条 CPU 指令执行的工具类，别的线程看不到中间状态。比方：洗手间门牌"看牌+翻牌"是一个动作，不存在两人同时看到"无人"都进门的缝隙。本项目用于 DeviceService.cs 的 _reconnectRunningFlag（心跳线程与重连循环共享）：CompareExchange(x,1,0) 抢锁防重入、CompareExchange(x,0,0) 原子读、Exchange(x,0) 原子写。分工口诀：volatile 管"看得见"，Interlocked 管单变量"检查+改"，lock 管多语句临界区。
+- **CancellationTokenSource / CancellationToken（取消令牌）**：协作式取消机制——"请你在下一个安全点停下来"。CTS 是遥控器（能按 Cancel()），Token 是发给工人的接收器（只能听不能按），用一次即作废，下次需 new 新的。比方：餐厅打烊铃——经理摇铃，正在等菜的员工立刻收工，而不是做完三小时才发现店关了。本项目重连循环靠它在切源/Dispose 时秒级退出：CancelReconnect 摇铃 → Task.Delay(ct) 抛 OperationCanceledException → return → finally 归零旗标。
+- **Task / async / await**：.NET 异步编程三件套。Task = "取餐号"——活正在做，你攥着号纸**不占着厨房**（线程），厨房可以给别人炒菜；await = 拿着号纸让出当前线程，不阻塞 CPU，等活完成再回来接着跑（不是"站在厨房等"）；async = 编译器变身开关——标记方法让编译器生成"能暂停再接着跑"的状态机。Task.Delay(ms, ct) = 承诺"ms 后或收到 ct 取消信号时通知你"，谁先发生算谁赢，取消则抛 OperationCanceledException。**Task 终态三选一**：RanToCompletion（await 继续下一行）/ Canceled（await 抛 OCE）/ Faulted（await 重抛原异常）——恢复执行永远由 CLR 派线程回到断点，线程先查终态再决定走向；"取消后 return"这条路同样需要线程回来执行 catch 和 return。
+- **ConfigureAwait(false)**：await 后的代码"不回到原始 SynchronizationContext 再跑"。典型场景：Task.Run 内的池线程无 UI 上下文，加不加效果一样；加了是防御性编程——防止代码被搬去 UI 线程环境时死锁。
+- **SynchronizationContext（传菜通道）**：.NET 给"线程专属工作区"的抽象。UI 线程有专属通道（UI 控件只能在自己的通道里碰），池线程没有。await 默认会"回到启动时的通道"接着跑——如果启动时是UI线程，做完后代码会被拽回UI线程；ConfigureAwait(false) 就是"别拽我回去，在哪做完就在哪跑"，防止UI线程被占卡死。
+- **句柄（Handle）**：操作系统给你的"资源编号纸条"。操作任何硬件/系统资源（串口、文件、窗口、网络端口）都要拿着这张纸条喊"帮我操作"，纸条里存着操作系统内部的资源索引。本项目中 SerialPort 打开串口时会拿到一个句柄（CreateFile返回），DisconnectAsync 会把句柄还给操作系统（CloseHandle）；半开状态的句柄会导致"端口被占用"错误，所以重连前必须先清旧句柄。
+- **续体（continuation）**：await 挂起时，编译器把"断点之后的剩余代码"打包成的回调对象，任务完成后由 CLR 派线程调用它接着跑。比方：取餐号背面写着的"拿到餐后去哪、接着做什么"。本项目例：MainViewModel.cs L202 `await UpdateDevicesAsync()` 的续体 = 其后的 Dispatcher.BeginInvoke 块 + finally 归零旗标；ConfigureAwait(false) 管的就是续体落在哪个线程执行，与任务本身在哪跑无关。
+- **热任务（hot task）**：C# 的 async 方法一被调用就**立即开始执行**（同步跑到第一个未完成的 await 才挂起、返回 Task），不需要任何人 await 它来"启动"。比方：下单即开火——厨房不等你取餐才开始炒菜。对比：Rust 的 async 是冷任务，没人 poll 就一行都不跑。本项目含义：`LoadMetricsAsync()` 即使没人 await，方法体也会真实执行到第一个 await 点。
 
 

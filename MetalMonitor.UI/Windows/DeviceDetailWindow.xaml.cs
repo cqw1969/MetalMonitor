@@ -24,6 +24,23 @@ namespace MetalMonitor.UI.Windows
         }
 
         /// <summary>
+        /// 窗口内容加载完成事件处理：首次从数据库加载指标配置与历史数据。
+        /// </summary>
+        /// <param name="sender">事件发送者（本窗口）。</param>
+        /// <param name="e">路由事件参数。</param>
+        /// <remarks>
+        /// async void 仅用于窗口事件订阅签名。首次加载从构造函数移到这里，是因为构造函数不可 async；
+        /// 后续刷新仍由 <see cref="OnActivated"/> 负责。
+        /// </remarks>
+        private async void OnLoaded(object sender, RoutedEventArgs e)
+        {
+            if (_viewModel != null)
+            {
+                await _viewModel.InitializeAsync();
+            }
+        }
+
+        /// <summary>
         /// 窗口激活事件处理：异步刷新指标配置，使从系统设置改完阈值/最值后切回本窗口时立即生效。
         /// </summary>
         /// <param name="sender">事件发送者（本窗口）。</param>

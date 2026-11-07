@@ -92,6 +92,21 @@ namespace MetalMonitor.core.Services
         /// <summary>链路健康跃迁锁：串口后台线程与心跳线程都会评估，保证"比较 + 写入"原子且只广播一次。</summary>
         private readonly object _linkHealthLock = new();
 
+        // ===== 自动重连（STEP-11 / D-13）=====
+        /// <summary>重连循环 <u>取消</u> 令牌源：切源、Dispose、手动取消时置位让循环退出。</summary>
+        private CancellationTokenSource? _reconnectCts;
+        /// <summary>当前重连尝试次数（0 = 尚未开始）；仅在重连循环内递增。</summary>
+        private int _reconnectAttempt;
+        /// <summary>重连循环运行中标记（1 = 跑着）；用 Interlocked 原子读写，心跳线程与循环自身都能访问。</summary>
+        private int _reconnectRunningFlag;
+        /// <summary>退避等待唤醒令牌源（D-17）：端口重现时取消它，让重连循环立即 <u>重试</u> 而不必睡满退避；仅循环等待期间非空。</summary>
+        private CancellationTokenSource? _reconnectWakeCts;
+        /// <summary>
+        /// 上一次轮询到的可用串口列表。
+        /// 用于比对新老端口列表，确保“新设备接入”的事件只在状态跳变时触发（防止频繁打断退避重连逻辑）。因单心跳线程持有，无需加锁。
+        /// </summary>
+        private string[] _lastSeenSerialPorts = Array.Empty<string>();
+
         // 批量写入缓冲：达到 BatchSize 条后自动落盘，退出/切换时立即 flush
         /// <summary>待落库记录缓冲队列，三条数据通路的第三步都汇入此处。</summary>
         private readonly List<DataRecord> _pendingBatch = new();  // 缓冲队列：三步汇合点的第三步往这里塞
@@ -279,6 +294,8 @@ namespace MetalMonitor.core.Services
         /// </remarks>
         public async Task SetDataSourceAsync(string source)
         {
+            CancelReconnect();   // 切源前先取消后台重连循环，避免"已切走还在偷偷连串口"
+
             // 切换数据源前先冲刷剩余的缓冲数据，避免切换瞬间丢失
             try { await FlushAsync().ConfigureAwait(false); } catch { }
 
@@ -332,28 +349,25 @@ namespace MetalMonitor.core.Services
                     }
                     else if (!_serialService.IsAvailable)
                     {
-                        // 能力缺失：当前系统没有任何串口硬件，重试也不会成功
+                        // 当前系统没有任何串口硬件：标记不可用；之后若插入设备，
+                        // 心跳里的 TryStartReconnect 会经"端口重现"判据自动拉起连接（D-17 兜底）
                         SetState(DataSourceState.Unavailable, "当前系统未检测到任何串口设备");
                     }
                     else
                     {
-                        try
+                        // D-18：按候选序列（持久化端口 → 历史成功端口 → 单端口兜底）逐个尝试；
+                        // 只有"连上并在看门狗窗口内收到有效帧"才算成功——避免连错设备还报正常
+                        bool connected = false;
+                        string? error = null;
+                        foreach (var portName in GetCandidatePorts())
                         {
-                            // 端口名优先用持久化的上次成功端口；为空时回退到首个可用端口
-                            // （ConfigService 约定：空值由调用方回退"首可用口/用户手选"）
-                            string portName = _configService.SerialPortName;
-                            if (string.IsNullOrWhiteSpace(portName))
-                                portName = _serialService.GetAvailablePorts().FirstOrDefault() ?? string.Empty;
+                            var result = await TryConnectVerifiedAsync(portName, CancellationToken.None).ConfigureAwait(false);
+                            if (result.Ok) { connected = true; break; }
+                            error = result.Error;
+                        }
 
-                            await _serialService.ConnectAsync(portName).ConfigureAwait(false);
-                            _configService.SerialPortName = portName;   // 把实际使用的端口名回写并持久化
-                            SetState(DataSourceState.Online, null);
-                        }
-                        catch (Exception ex)
-                        {
-                            // 连接失败（端口被占用 / 持久化端口已消失等）：保持用户选择，只标记故障并广播
-                            SetState(DataSourceState.Faulted, ex.Message);
-                        }
+                        if (!connected)
+                            SetState(DataSourceState.Faulted, error ?? "串口连接失败：未能在任何候选端口上收到有效数据帧");
                     }
                     break;
                 case DataSourceKind.Simulation:
@@ -589,12 +603,14 @@ namespace MetalMonitor.core.Services
             if (_disposed) return;
 
             int watchdogSeconds = _configService.SerialWatchdogSeconds;
+            bool reconnecting = Interlocked.CompareExchange(ref _reconnectRunningFlag, 0, 0) == 1;  // 原子读
             var next = LinkHealthEvaluator.Evaluate(
                 nowMs,
                 Volatile.Read(ref _serialConnectedAtMs),
                 Volatile.Read(ref _lastSerialByteMs),
                 Volatile.Read(ref _lastSerialValidFrameMs),
-                watchdogSeconds);
+                watchdogSeconds,
+                reconnecting);
 
             lock (_linkHealthLock)
             {
@@ -616,8 +632,337 @@ namespace MetalMonitor.core.Services
             LinkHealth.Recovering => "串口已连接，等待首帧",
             LinkHealth.NoSignal => $"超过 {watchdogSeconds} 秒未收到任何串口数据",
             LinkHealth.NoValidFrame => $"超过 {watchdogSeconds} 秒未收到有效数据帧",
+            LinkHealth.Reconnecting => "链路已断开，正在后台自动重连",
             _ => null
         };
+
+        /// <summary>
+        /// 心跳每秒调用一次：决定"该不该派人去重连""要不要把睡着的人叫醒"（D-17 / STEP-20）。
+        /// </summary>
+        /// <remarks>
+        /// 按顺序做四个判断，任何一步不满足就返回、不做多余动作：
+        ///   1. 现在选的是不是串口？不是就不归它管（另一条通路自己带重连机制）。
+        ///   2. 值班员已经在跑？→ 不再派第二个人；但若门口"刚来了"记忆名单里的设备，按一下门铃。
+        ///      为什么强调"刚来"而不是"一直在"：见 _lastSeenSerialPorts 的注释。
+        ///   3. 没人值班时，判断该不该派，两条理由任一成立就派：
+        ///      · 数据已经断了（3 秒没收到任何字节）→ 理由"通讯中断"。
+        ///      · 压根没连上，但目标设备已经插在电脑上 → 理由"检测到设备接入"。
+        ///      第二条的"压根没连上"是护栏：正常连着时这条永远不成立，否则等于每秒把自己重连一遍。
+        ///   4. 该派 → 原子地占住"正在值班"这个位置 → 顶栏先显示"连接失败 / 自动重连中" → 后台开工。
+        /// 为什么"断了"不用 IsConnected 判断？因为拔掉线之后它仍然说"连着"（对象自己不知道线没了），
+        /// 只有"多久没收到数据"这一条是可信的。
+        /// </remarks>
+        private void TryStartReconnect()
+        {
+            if (_selectedDataSource != DataSourceKind.Serial) return;
+
+            // 循环已在跑：不重复派人；只有"记忆名单里的设备刚刚出现"才按铃，让它立刻试一次，不必睡满这一觉。
+            // 用"刚刚出现"而不是"一直在场"：设备一直插着却接不上数据时，每秒按铃会把"越等越久"彻底打穿。
+            if (_reconnectRunningFlag == 1)
+            {
+                if (SerialPortNewlyAppeared())
+                    WakeReconnectLoop();
+                return;
+            }
+
+            // 循环没在跑：先把当前端口记成"基线"，免得刚启动后的第一拍把本来就在场的设备误判成"刚来的"
+            _lastSeenSerialPorts = GetCurrentSerialPorts();
+
+            string? reason;
+            // 理由一：3 秒没收到任何字节 —— 这是"线断了"唯一可信的证据（拔线时系统仍说"连着"）
+            if (_linkHealth == LinkHealth.NoSignal)
+                reason = "通讯中断，自动重连中";
+            // 理由二：还没连上，但电脑上存在串口 —— 启动时没接线 / 掉线后插回了另一个口。
+            // 判据放宽为"有任意串口在场"：启动后从未连上（Inactive）且小本子里的口全不在场时，
+            // 只要电脑上还有串口，就当作设备可能插在了没记过的口上，交给 GetCandidatePorts 逐个试。
+            else if (_serialService?.IsConnected != true
+                     && (SerialPortAppeared() || GetCurrentSerialPorts().Length > 0))
+                reason = "检测到串口设备接入，自动重连中";
+            else
+                return;
+
+            // 抢位子：CAS 只有第一个人能把 0 换成 1，后面的都看见 1 直接放弃（避免两个心跳派两个人）
+            if (Interlocked.CompareExchange(ref _reconnectRunningFlag, 1, 0) != 0) return;   // 是1时return
+            if (_disposed) { Interlocked.Exchange(ref _reconnectRunningFlag, 0); return; }   // Dispose 窗口竞争
+
+            // 断线/待接入都属故障恢复过程：顶栏第一行转"连接失败"，与第二行"重连中"共同表达现状（STEP-14 修复引入）
+            SetState(DataSourceState.Faulted, reason);
+
+            // 先做一次主动 DisconnectAsync 把旧句柄清干净（IgnoreAwaitfire-and-forget）
+            _ = Task.Run(async () =>
+            {
+                if (_serialService != null)
+                {
+                    try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
+                }
+
+                // 异步启动循环，自身 catch 一切异常不得把程序打挂
+                try
+                {
+                    _reconnectAttempt = 0;
+                    _reconnectCts = new CancellationTokenSource();
+                    await ReconnectLoopAsync(_reconnectCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { /* 正常取消，静默退出 */ }
+                catch
+                {
+                    // 循环内一切非取消异常静默吞掉：不得让后台任务打挂进程
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _reconnectRunningFlag, 0);
+                    _reconnectCts?.Dispose();
+                    _reconnectCts = null;
+                }
+            });
+        }
+
+        /// <summary>
+        /// 值班员的主循环：睡一觉 → 醒来去试 → 不行再睡更久 → 一直重复，直到接上、被叫停或程序关闭。
+        /// </summary>
+        /// <param name="ct">真正的收工信号（切源、Dispose、手动取消时置位）。</param>
+        /// <remarks>
+        /// 每一轮的四个动作：
+        ///   1. 按"第几次尝试"算出这一觉睡多久（1 秒起，逐次翻倍，最长 30 秒，带一点随机抖动避免死板）
+        ///   2. 睡这一觉 —— 但这觉随时能被打断（设备刚插回来时会按门铃）
+        ///   3. 醒来后按"敲门顺序"挨个试门，每个门都要听 3 秒才下结论
+        ///   4. 任何一个门通过就收工；全都没通过就进入下一轮，睡得更久一点
+        /// 为什么无限重试：现场可能半夜才恢复供电，程序放弃就等于要人守夜。
+        /// </remarks>
+        private async Task ReconnectLoopAsync(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested && !_disposed)
+            {
+                int baseSeconds = _configService.SerialReconnectBaseSeconds;
+                int maxSeconds = Math.Max(baseSeconds, _configService.SerialReconnectMaxSeconds);   // 上限小于基准时自动对齐
+
+                int delayMs = ReconnectBackoff.GetDelayMs(_reconnectAttempt, baseSeconds, maxSeconds);
+                _reconnectAttempt++;   // 先递增（下次尝试序号），然后等
+
+                // 这一觉可以被打断（D-17）：外面按铃 → 取消 wakeCts → 本轮睡眠立刻结束，直接往下走去尝试；
+                // 真正的收工（切源/关程序）走的是 ct。两个开关分开，才不会把"叫醒"当成"收工"。
+                using var wakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                _reconnectWakeCts = wakeCts;   // 把开关挂到外面，门铃才找得到
+                try
+                {
+                    await Task.Delay(delayMs, wakeCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // 醒来的原因有两种，必须分开处理：
+                    //   ct 被取消 = 真收工 → 直接回家，不再尝试
+                    //   只是 wakeCts 被取消 = 被叫醒 → 把"下次该等多久"清零，马上试一次
+                    if (ct.IsCancellationRequested) return;   // 真取消：切源/Dispose/手动取消
+                    _reconnectAttempt = 0;                    // 被叫醒：退避清零，立即重试
+                }
+                finally
+                {
+                    // 只拆自己挂的那把开关：下一轮会挂新的，别把新的误拆了
+                    if (ReferenceEquals(_reconnectWakeCts, wakeCts))
+                        _reconnectWakeCts = null;
+                }
+
+                if (ct.IsCancellationRequested || _disposed) return;
+                if (_selectedDataSource != DataSourceKind.Serial) return;   // 用户可能在等待期间切了源
+
+                if (_serialService == null || !_serialService.IsAvailable) continue;
+
+                // 尝试连接：按候选序列逐个试，任一端口通过验证即成功（D-18 兼容端口漂移 COM5→COM6）
+                foreach (var portName in GetCandidatePorts())
+                {
+                    var result = await TryConnectVerifiedAsync(portName, ct).ConfigureAwait(false);
+                    if (result.Ok) return;   // 成功：状态已置 Online、端口已持久化；RunningFlag 由 finally 归零
+                    if (ct.IsCancellationRequested || _disposed) return;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 取消重连循环（切源、Dispose 时调用）：立即置位 CTS，让循环退出 RunningFlag 归零。
+        /// 幂等：CTS 可能为 null 或已取消，全部安全处理。
+        /// </summary>
+        private void CancelReconnect()
+        {
+            _reconnectCts?.Cancel();
+        }
+
+        /// <summary>
+        /// 现在电脑上有哪些串口。服务缺失或没硬件时给空名单，而不是 null——
+        /// 这样调用方不用到处写"先判空再判长度"，读起来不会一堆 if 套 if。
+        /// </summary>
+        private string[] GetCurrentSerialPorts() =>
+            _serialService?.IsAvailable == true ? _serialService.GetAvailablePorts() : Array.Empty<string>();
+
+        /// <summary>
+        /// 从口袋里掏出"小本子"：先把上次成功的那个名字拿出来，再把历史成功的名字依次附上，重复的只留一个。
+        /// 为什么上次成功的排最前：绝大多数情况它就是对的那个，试它一次就成，不用挨个试到最后一个。
+        /// 为什么必须去重：两个来源（纸条 + 本子）很可能记着同一个名字，重复试等于白等一轮 3 秒。
+        /// </summary>
+        private List<string> GetRememberedPorts()
+        {
+            var remembered = new List<string>();
+            void AddIfAbsent(string? port)
+            {
+                if (!string.IsNullOrWhiteSpace(port)
+                    && !remembered.Contains(port, StringComparer.OrdinalIgnoreCase))
+                    remembered.Add(port);
+            }
+
+            AddIfAbsent(_configService.SerialPortName);
+            foreach (var port in _configService.SerialKnownPorts)
+                AddIfAbsent(port);
+            return remembered;
+        }
+
+        /// <summary>
+        /// "目标设备现在是不是插在电脑上"——注意问的是"在不在"，不管它是刚插的还是插了很久。
+        /// 用途：决定"根本还没连上时，要不要因为看见设备而主动去连一次"。
+        /// </summary>
+        /// <remarks>
+        /// 判断规则分两种情形：
+        ///   · 小本子还是空的（第一次用/换了电脑）→ 只要电脑上有任何串口，就当作"设备可能在"。
+        ///   · 小本子上有名字 → 名字里任意一个现在在场，就算"设备在"。
+        ///     这样换口后名字变了（比如从三号变成四号），只要四号也曾经成功过，也能被发现。
+        /// 与 SerialPortNewlyAppeared 的区别：这个只回答"在不在"，那个回答"是不是刚来的"。
+        /// </remarks>
+        private bool SerialPortAppeared()
+        {
+            string[] ports = GetCurrentSerialPorts();
+            if (ports.Length == 0) return false;
+
+            var remembered = GetRememberedPorts();
+            if (remembered.Count == 0) return true;   // 毫无记忆（首次运行/换机）：任何端口出现都算
+
+            // 本子上任意一个名字在场就算：换口后名字变了，只要新名字在本子上也能发现
+            return ports.Any(p => remembered.Contains(p, StringComparer.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// "是不是刚来了一个本子上记着的设备"——只有本次比上一拍多出来的端口才算（边沿判断）。
+        /// 用途：给已经在跑的重连循环按门铃，让它立刻试一次。
+        /// </summary>
+        /// <remarks>
+        /// 为什么必须"只认刚来的"：假设插着一个能打开、但收不到数据的设备（比如波特率不对），
+        /// 它一直插在那儿，如果"在场就按铃"，每秒都会把睡着的值班员叫起来，
+        /// "失败后越等越久"的机制就完全失效，变成每 3 秒死磕一次。
+        /// 注意：调用一次就把基线更新成当前名单，所以同一个"新人"只会报一次。
+        /// </remarks>
+        private bool SerialPortNewlyAppeared()
+        {
+            string[] ports = GetCurrentSerialPorts();
+            // 本次有、上次没有 = 新来的
+            var appeared = ports
+                .Where(p => !_lastSeenSerialPorts.Contains(p, StringComparer.OrdinalIgnoreCase))
+                .ToArray();
+            _lastSeenSerialPorts = ports;   // 基线前移：同一个"新人"只报一次
+
+            if (appeared.Length == 0) return false; //没有新的
+
+            var remembered = GetRememberedPorts();
+            if (remembered.Count == 0) return true;   // 无记忆：新出现任何端口都算
+            return appeared.Any(p => remembered.Contains(p, StringComparer.OrdinalIgnoreCase)); //多出来的这个端口已被记录->true
+        }
+
+        /// <summary>
+        /// 按门铃（D-17）：把正在睡着的那一轮等待取消掉，让循环立刻醒过来试一次。
+        /// 循环没在睡觉时调用它什么也不会发生，所以调用方不用先判断"它睡没睡"。
+        /// </summary>
+        private void WakeReconnectLoop()
+        {
+            try { _reconnectWakeCts?.Cancel(); }
+            catch (ObjectDisposedException) { /* 正赶上循环收尾把开关拆了，忽略即可 */ }
+        }
+
+        /// <summary>
+        /// 出门前定的"敲门顺序"（D-18）：先敲本子上记着的门，再看要不要盲敲。
+        /// </summary>
+        /// <returns>按顺序该试的端口名；没有串口服务时给空名单。</returns>
+        /// <remarks>
+        /// 三层，顺序有讲究：
+        ///   1. 上次成功的那个名字 —— 最可能一击命中，放第一。
+        ///   2. 本子上其他成功过的名字 —— 换口后新名字通常在这里。
+        ///   3. 兜底 —— 本子上的名字全都不在场时，才考虑"盲敲"：
+        ///      · 本子整体为空（第一次用）→ 把所有在场的门都试一遍，别直接放弃；
+        ///      · 只剩唯一一个门开着 → 试它。
+        /// 为什么第 3 层不无条件"把所有门都试一遍"：门越多，每试一个都要等 3 秒验证，
+        /// 会把一次恢复拖成十几秒；只有在完全没有线索时才值得这么做。
+        /// </remarks>
+        private List<string> GetCandidatePorts()
+        {
+            var candidates = new List<string>();
+            if (_serialService == null) return candidates;
+
+            string[] available = _serialService.GetAvailablePorts();
+
+            // 第一层、第二层：上次成功的名字 → 本子上其他名字（GetRememberedPorts 已去重且保序）
+            candidates.AddRange(GetRememberedPorts());
+
+            if (candidates.Count == 0)
+            {
+                // 第三层之一：手里一个名字都没有（第一次用/换电脑），挨个试所有在场的门，而不是直接放弃。
+                // 排序只是为了让每次尝试顺序一致、便于复现问题，不代表谁更优先。
+                candidates.AddRange(available.OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
+            }
+            else if (!candidates.Any(p => available.Contains(p, StringComparer.OrdinalIgnoreCase)) && available.Length == 1)
+            {
+                // 第三层之二：本子上的名字全都不在场，而电脑上刚好多出唯一一个门——试它
+                candidates.Add(available[0]);
+            }
+
+            return candidates;
+        }
+
+        /// <summary>
+        /// 试一个门：推开它，然后站在原地听 3 秒，看里面有没有人说话（收到真正的数据）。
+        /// 有人说话才回来报"成功"，没人说话就关上门，让外面去试下一个。
+        /// </summary>
+        /// <remarks>
+        /// 为什么要听 3 秒而不是"推开就报成功"：推开只证明这个门没锁，
+        /// 门后面完全可能是别的设备（比如另一块板、一个别的串口工具），一条数据都不会来。
+        /// 为什么听 3 秒这个数：它和看门狗用的是同一个值——"3 秒没数据就认为断了"，
+        /// 反过来"3 秒内来了数据就认为通"，两个判断用同一把尺子，不会出现自相矛盾的标准。
+        /// 为什么失败必须关上门：不关的话句柄一直被占着，下一个门可能因此打不开，看似"所有门都不行"。
+        /// </remarks>
+        /// <param name="portName">要试的门牌号。</param>
+        /// <param name="ct">真正的收工信号（切源/关程序）；门铃信号不传进来，以免打断正在进行的 3 秒倾听。</param>
+        /// <returns>Ok = 是否通过倾听（通过时已经报"正常"并把门牌号写回配置）；Error = 推门时的异常信息（倾听没过则为 null）。</returns>
+        private async Task<(bool Ok, string? Error)> TryConnectVerifiedAsync(string portName, CancellationToken ct)
+        {
+            // 记住"推门之前，最后一次听到声音是什么时候"，之后只看它有没有往后走
+            long beforeFrameMs = Volatile.Read(ref _lastSerialValidFrameMs);
+            try
+            {
+                await _serialService!.ConnectAsync(portName).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                return (false, ex.Message);   // 端口不存在/被占用：试下一个候选
+            }
+
+            try
+            {
+                // 这就是"站在原地听 3 秒"：期间只要收到一帧通过校验的数据，下面的时间戳就会往后走
+                await Task.Delay(_configService.SerialWatchdogSeconds * 1000, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // 倾听过程中被要求收工（切源/关程序）：先把门关上再走，别把句柄漏在那儿
+                try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
+                return (false, null);
+            }
+
+            if (Volatile.Read(ref _lastSerialValidFrameMs) > beforeFrameMs)
+            {
+                // 听到声音了：把门牌号写回纸条、记进本子（同一个方法里完成，避免两处口径不一致）
+                _configService.RecordSerialPortSuccess(portName);
+                SetState(DataSourceState.Online, null);
+                return (true, null);
+            }
+
+            // 3 秒内一声没听到：门后不是我们的设备（或者波特率不对），关上门去试下一个
+            try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
+            return (false, null);
+        }
 
         /// <summary>
         /// 按指标值年龄与链路状态执行质量降级扫描：写值路径已无条件置 Good，本方法只负责降级。
@@ -873,6 +1218,7 @@ namespace MetalMonitor.core.Services
             // T4.1：先评估链路健康，再按新鲜度做质量降级（写值瞬间已置 Good，此处只降级）
             long nowMs = Environment.TickCount64;
             EvaluateLinkHealthAt(nowMs);
+            TryStartReconnect();     // 整套"派人与按铃"的唯一入口：每拍检查一次，条件不满足时内部直接返回
             ApplyQualityDegradationAt(nowMs);
 
             // 三步汇合点的第三步在此统一冲刷：达到阈值才写库，摊薄磁盘 IO 开销
@@ -1158,6 +1504,8 @@ namespace MetalMonitor.core.Services
         public void Dispose()
         {
             if (_disposed) return;
+
+            CancelReconnect();   // 窗口关闭时立即叫停后台重连循环
 
             // 退出时立即落盘剩余缓冲数据
             //关于这里,是不是该在清空之前停止心跳,否则心跳线程可能还在往_pendingBatch里加数据,导致数据丢失

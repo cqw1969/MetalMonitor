@@ -6,7 +6,7 @@
         xmlns:core="clr-namespace:MetalMonitor.Core;assembly=MetalMonitor.core"
         Title="设备详情" Height="700" Width="900"
         Background="#FF161622" WindowStartupLocation="CenterOwner"
-        Activated="OnActivated">
+        Activated="OnActivated" Loaded="OnLoaded">
     <Grid Background="#FF1E1E2E">
         <Grid Margin="20">
             <Grid.RowDefinitions>

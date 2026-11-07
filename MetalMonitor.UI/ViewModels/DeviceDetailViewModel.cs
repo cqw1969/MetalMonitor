@@ -74,7 +74,8 @@ namespace MetalMonitor.UI.ViewModels
                 OnPropertyChanged(nameof(MetricDisplayName));
                 OnPropertyChanged(nameof(CurrentMetricUnit));
                 UpdateCurrentValueText();
-                LoadHistoricalDataAsync().ConfigureAwait(false);
+                // setter 不可 async：显式丢弃该任务，异常由 LoadHistoricalDataAsync 内部兜住
+                _ = LoadHistoricalDataAsync();
             }
         }
 
@@ -188,24 +189,27 @@ namespace MetalMonitor.UI.ViewModels
                     Labeler = value => $"{value:F1} {GetMetricUnit()}"
                 }
             };
-
-            LoadMetricsAsync().ConfigureAwait(false);
         }
 
         /// <summary>
         /// 从数据库加载全部指标配置，刷新启用指标下拉列表（当前选中指标失效时回退到第一个），随后加载历史数据。
         /// </summary>
         /// <returns>表示异步加载操作的任务。</returns>
-        private async Task LoadMetricsAsync()
+        public async Task InitializeAsync()
         {
-            var configs = await _databaseService.GetAllMetricConfigsAsync();
-            _metricConfigs = configs;
-            AvailableMetrics.Clear();
-            foreach (var c in configs)
+            List<MetricConfig> configs;
+            try
             {
-                if (c.IsActive)
-                    AvailableMetrics.Add(c);
+                configs = await _databaseService.GetAllMetricConfigsAsync();
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"加载指标配置失败: {ex.Message}");
+                return;
+            }
+
+            _metricConfigs = configs;
+            SyncAvailableMetrics(configs);
             if (AvailableMetrics.Count > 0 && !AvailableMetrics.Any(c => c.Name == _selectedMetricName))
                 _selectedMetricName = AvailableMetrics[0].Name;
 
@@ -226,12 +230,7 @@ namespace MetalMonitor.UI.ViewModels
         {
             var configs = await _databaseService.GetAllMetricConfigsAsync();
             _metricConfigs = configs;
-            AvailableMetrics.Clear();
-            foreach (var c in configs)
-            {
-                if (c.IsActive)
-                    AvailableMetrics.Add(c);
-            }
+            SyncAvailableMetrics(configs);
 
             // 当前指标被停用/删除时回退到第一个可用指标
             if (!AvailableMetrics.Any(c => c.Name == _selectedMetricName))
@@ -243,10 +242,57 @@ namespace MetalMonitor.UI.ViewModels
                 }
             }
 
+            // 增量同步不再清空集合，ComboBox 选中态不会被打断；这里仍重发一次通知，
+            // 用于首次填充（集合原为空）与上面回退场景把选中项落到控件上（STEP-17）
+            OnPropertyChanged(nameof(SelectedMetricName));
             OnPropertyChanged(nameof(MetricDisplayName));
             OnPropertyChanged(nameof(CurrentMetricUnit));
             UpdateCurrentValueText();
             UpdateChart();
+        }
+
+        /// <summary>
+        /// 增量同步可选指标集合（STEP-17 方案 B）：不清空集合，只移除消失/停用项、更新同名项、补入新增项。
+        /// </summary>
+        /// <param name="configs">数据库返回的最新全部指标配置（含停用项）。</param>
+        /// <remarks>
+        /// 之所以不用 Clear()+Add：ObservableCollection 的 Clear 会触发 Reset 事件，
+        /// ComboBox 收到 Reset 后是延后重建列表的，此时再设选中值会落空（列表尚未重建），
+        /// 表现为下拉框打开时空白。增量同步只发 Add/Remove，控件可当场处理，且选中项从未离场。
+        /// </remarks>
+        private void SyncAvailableMetrics(List<MetricConfig> configs)
+        {
+            // ① 移除：已停用或已从配置中删除的指标（倒序删，避免索引位移）
+            for (int i = AvailableMetrics.Count - 1; i >= 0; i--)
+            {
+                var existing = AvailableMetrics[i];
+                var latest = configs.FirstOrDefault(c => c.Name == existing.Name);
+                if (latest == null || !latest.IsActive)
+                    AvailableMetrics.RemoveAt(i);
+            }
+
+            // ② 更新与新增：按数据库顺序补齐；同名项只更新属性，保留对象实例 = 保留控件选中态
+            for (int i = 0; i < configs.Count; i++)
+            {
+                var latest = configs[i];
+                if (!latest.IsActive) continue;
+
+                var existing = AvailableMetrics.FirstOrDefault(c => c.Name == latest.Name);
+                if (existing == null)
+                {
+                    AvailableMetrics.Insert(Math.Min(i, AvailableMetrics.Count), latest);
+                    continue;
+                }
+
+                // MetricConfig 自带变更通知，逐个赋值即可让界面同步（如设置页改过的阈值/量程）
+                existing.DisplayName = latest.DisplayName;
+                existing.Unit = latest.Unit;
+                existing.AlarmThreshold = latest.AlarmThreshold;
+                existing.AlarmEnabled = latest.AlarmEnabled;
+                existing.AlarmDirection = latest.AlarmDirection;
+                existing.MinValue = latest.MinValue;
+                existing.MaxValue = latest.MaxValue;
+            }
         }
 
         /// <summary>

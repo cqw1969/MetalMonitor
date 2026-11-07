@@ -560,4 +560,63 @@
 - **教训/最佳实践**: 凡"有缓冲 + 有后台线程"的服务，关闭流程一律遵循**两阶段关闭**：先立旗标阻断入队，再排空存量，最后退订/释放；凡是门卫，只放在公开入口，内核必须能绕过它。验证手段是既有用例 `Dispose_FlushesRemainingBuffer`（覆盖"置位后仍能冲刷"这一关键分支）
 - **最后校验**: 2026-10-24 修复后 `dotnet test` 84/84 通过，`dotnet build` 无 CS 警告（仅存量的 NU1701 包兼容提示）
 
+### 39. 详情页指标下拉框初始显示空白（Clear 后漏发选中项通知）
+
+- **时间**: 2026-10-28 18:15:07（STEP-15，真机验收 T4.2/T4.3 时发现）
+- **文件**: `MetalMonitor.UI/ViewModels/DeviceDetailViewModel.cs`：`RefreshConfigsAsync` 末段（按方法名定位）；关联 `DeviceDetailWindow.xaml.cs` 的 `OnActivated`、`DeviceDetailWindow.xaml` 的指标 ComboBox
+- **现象**: 打开设备详情页（或从其他窗口切回）时，指标类型下拉框内容为空、无选中文字；手动选一次后本次会话内正常
+- **根本原因**: 三个各自正确的机制叠加导致 VM 与控件脱钩
+  1. ComboBox 用 `SelectedValue` + `SelectedValuePath="Name"` 绑定字符串
+  2. 窗口每次激活都会调用 `RefreshConfigsAsync`，其中 `AvailableMetrics.Clear()` 会销毁 ComboBox 的选中状态，WPF 随即往 VM 回写 null
+  3. `SelectedMetricName` 的 setter 有 null/空值守卫（防删除指标后选中项变 null），合法地拒收这次回写 → VM 仍持 "Temperature"，控件已无选中项
+  4. 刷新路径在"指标仍存在"的正常分支上只通知了 `MetricDisplayName` / `CurrentMetricUnit`，**漏发 `SelectedMetricName`**，而首次加载路径是有这行的——两条路径的通知集合不一致
+- **解决方法**: 在 `RefreshConfigsAsync` 的重绘段补一行 `OnPropertyChanged(nameof(SelectedMetricName));`，强制控件按 VM 当前值重建选中状态
+- **关联**: #14（配置变更后不即时生效，同属"刷新路径遗漏"）
+- **教训/最佳实践**: 同一个 ViewModel 若存在两条装载/刷新路径，两条路径的通知集合必须一致；凡"先 Clear 再填充"的集合，都要考虑绑定控件选中状态被销毁后的重建。纯 UI 时序问题纸面单测难以覆盖，只能靠真机验收暴露
+- **最后校验**: 2026-10-28 修复后 `dotnet test` 123/123 通过
+
+  **【2026-10-29 补充：补丁未根治，STEP-17（D-16 方案 B）根治】**
+  - 复发时间：2026-10-29（真机复验：初始打开详情页下拉框仍空白）
+  - 更深的根因：`Clear()` 触发的 Reset 事件让 ComboBox **延后**重建列表，补发的选中通知落在列表重建之前，依然落空——"补齐通知"不足以对抗 Reset 的时序副作用
+  - 根治方法：新增 `SyncAvailableMetrics` 增量同步（同名只更新属性、消失项倒序移除、新增项 `Insert(Math.Min(i, Count))` 插入），替换 `InitializeAsync` 与 `RefreshConfigsAsync` 两处 Clear+Add；选中项对象从未离场，选中态天然保留
+  - 教训升级：凡带选中态语义的控件（ComboBox/ListBox/DataGrid），其数据源集合优先增量同步；Clear+Add 只适用于无选中态的纯展示集合
+  - 最后校验：2026-10-29 `dotnet test` 123/123 + 真机三场景复验通过（初始显示/切换不闪烁/停用消失并回退）
+
+### 40. 运行期串口断线后数据源状态恒为"正常"（重连入口漏置 Faulted）
+
+- **时间**: 2026-10-28 18:15:07（STEP-16，真机验收时发现，属 STEP-11 实现与已确认方案的偏差）
+- **文件**: `MetalMonitor.core/Services/DeviceService.cs`：`MaybeStartReconnect`（约 L645-660）；对照 `ReconnectLoopAsync` 的成功分支与 `SetState`
+- **现象**: 串口运行中拔线，顶栏链路行正确变红"无信号"并转琥珀"重连中"，但数据源行始终为绿色"正常"；重连失败期间亦不变
+- **根本原因**: 运行期断线在 .NET `SerialPort` 上是静默的（对象不知道线断了），`DataSourceState` 只在显式连接/切源路径被写入；`MaybeStartReconnect` 作为"断线被发现"的唯一入口，只启动了重连循环，**没有同步把状态置为 Faulted**。初始连接失败路径有 `SetState(Faulted, ...)`，运行期断线路径漏了同一动作，两条失败路径行为不一致
+- **解决方法**: 在 `MaybeStartReconnect` 通过 CAS 防重入后、启动循环前补一行 `SetState(DataSourceState.Faulted, "通讯中断，自动重连中")`；重连成功时既有 `SetState(Online, null)` 恢复
+- **关联**: #38（生命周期路径动作遗漏）/ STEP-9 起的三态状态面（D-4）
+- **教训/最佳实践**: 同一个业务状态若有多条进入路径（初始连接 vs 运行中断线），每条路径都必须完整更新该状态，不能只在"看起来最像失败"的那条里写。验收清单里应显式包含"状态面在运行期故障时是否变化"，因为链路健康变化会掩盖状态面的沉默
+- **最后校验**: 2026-10-28 修复后 `dotnet test` 123/123 通过
+
+### 41. 首次运行多串口时候选列表为空，直接判故障（STEP-19 引入的回归）
+
+- **时间**: 2026-10-30（STEP-20 补洞，用户确认方案 A 后修复）
+- **文件**: `MetalMonitor.core/Services/DeviceService.cs`：`GetCandidatePorts`（修复后约 L849-872）、`SerialPortAppeared`（约 L801-811）、新增 `SerialPortNewlyAppeared`（约 L821-834）、`TryStartReconnect`（约 L653-680）
+- **现象**: 全新环境（`config.json` 的 `Serial.PortName` 与 `Serial.KnownPorts` 均为空）且系统存在 ≥2 个串口时，切到"串口"立即显示"连接失败：未能在任何候选端口上收到有效数据帧"，一个端口都没试。STEP-19 之前的实现会回退"第一个可用端口"，可连上
+- **根本原因**: STEP-19 把端口选择从"单端口 + 首端口兜底"改为"候选序列"，兜底条件只写了 `available.Length == 1`，漏掉"候选列表整体为空"这一新分支——此时既没有名字可试、兜底条件也不成立，`foreach` 遍历零次后直接判失败。同时 `SerialPortAppeared` 只比对持久化单名，换口后名字变化时永不触发唤醒，最坏要等满退避（≤30 秒）
+- **解决方法**: ① `GetCandidatePorts` 增加第一分支：候选为空时把全部可用端口按名排序加入，原"仅一个端口"兜底降为 `else if`；② `SerialPortAppeared` 从"只认持久化单名"放宽为"记忆名单（PortName + KnownPorts）任一端口在场"，并新增 `SerialPortNewlyAppeared` 作为"刚刚出现"的边沿判据，供唤醒使用；③ `TryStartReconnect` 循环已在跑分支改用边沿判据，循环未跑时先把当前端口记为基线，避免每拍唤醒把退避打穿
+- **关联**: D-18 / STEP-19（同一次改造的后续修正）、#40（同一入口方法的演进）
+- **教训/最佳实践**: 把"单一默认值兜底"改成"候选序列"时，必须覆盖"序列为空"这个**新出现的状态**——原来隐式存在的兜底分支最容易被漏掉。验收清单应显式列出三种边界：集合为空 / 集合非空但全部无效 / 集合只有一个元素
+- **最后校验**: 2026-10-30 修复后 `dotnet build` 0 错误、`dotnet test` 123/123 通过
+
+### 42. 启动从未连上 + 记忆端口不在场 + 设备插在新端口 → 重连循环永不启动（窗口丙卡死）
+
+- **时间**: 2026-11-07 11:13:51（STEP-22，用户确认方案 A 后修复）
+- **文件**: `MetalMonitor.core/Services/DeviceService.cs`：`TryStartReconnect`（修复后约 L675-680）
+- **现象**: 程序启动后切到"串口"，若此前成功连过某端口（小本子非空），而设备这次插在另一个没记过的端口上，界面停在"连接失败"且**永久不恢复**；即使之后重插设备也无反应
+- **根本原因**: `TryStartReconnect` 的两条派人理由形成覆盖盲区：
+  1. 理由一要求 `_linkHealth == NoSignal`，但本次启动从未连上时为 `Inactive`，不成立；
+  2. 理由二要求 `SerialPortAppeared()`，其判据是"记忆名单里任意端口在场"，而设备所在的新端口不在名单内，也不成立；
+  → 落入 `else return`，重连循环从未启动 → `GetCandidatePorts` 的第二/三层兜底（"唯一在场端口"/"全部可用端口"）永远没有机会执行 → 卡死
+- **解决方法**: 理由二判据放宽为 `SerialPortAppeared() || GetCurrentSerialPorts().Length > 0`——"还没连上"且"电脑上存在任意串口"即派人，具体试哪个口交给 `GetCandidatePorts` 的候选序列决定。CAS（`Interlocked.CompareExchange`）保证仍只启动一个循环，循环启动后后续心跳走"边沿唤醒"分支，不会打穿退避
+- **关联**: #41（同一入口方法的上一轮补洞，本次是上一轮未覆盖的叠加场景）、D-18 / STEP-19
+- **教训/最佳实践**: 逐层补"兜底分支"时，容易只补"单层条件成立"的简单组合，而漏掉"多条件同时不成立"的叠加场景。判断"要不要启动恢复流程"时，判据应当是**必要条件的否定**（"没在跑" + "系统里还有可试的目标"），而不是**充分条件**的枚举；枚举永远会漏一格
+- **代价/已知风险**: 放宽后若电脑上插着无关串口设备，重连循环会尝试它并消耗一个验证窗口（约 3 秒），但不影响正确性，失败后按退避继续
+- **最后校验**: 2026-11-07 修复后 `dotnet build` 0 错误、`dotnet test` 124/124 通过（新增 `Reconnect_StartsWhenRememberedPortsAbsentButAnotherPortPresent` 复现本场景）
+
 

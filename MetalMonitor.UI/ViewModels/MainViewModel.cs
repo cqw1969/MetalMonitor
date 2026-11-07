@@ -108,6 +108,7 @@ namespace MetalMonitor.UI.ViewModels
         {
             LinkHealth.Healthy => "健康",
             LinkHealth.Recovering => "等待首帧",
+            LinkHealth.Reconnecting => "重连中",
             LinkHealth.NoValidFrame => "有字节无有效帧",
             LinkHealth.NoSignal => "无信号",
             _ => "未连接"

@@ -46,6 +46,9 @@
                                         <DataTrigger Binding="{Binding CurrentLinkHealth}" Value="Recovering">
                                             <Setter Property="Foreground" Value="#FFFFB86B"/>
                                         </DataTrigger>
+                                        <DataTrigger Binding="{Binding CurrentLinkHealth}" Value="Reconnecting">
+                                            <Setter Property="Foreground" Value="#FFFFB86B"/>
+                                        </DataTrigger>
                                         <DataTrigger Binding="{Binding CurrentLinkHealth}" Value="NoValidFrame">
                                             <Setter Property="Foreground" Value="#FFFF6B6B"/>
                                         </DataTrigger>

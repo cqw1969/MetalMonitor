@@ -4,9 +4,14 @@
   "RefreshInterval": 1000,
   "DataSource": "MQTT",
   "Serial": {
-    "PortName": "COM6",
+    "PortName": "COM5",
+    "KnownPorts": [
+      "COM5"
+    ],
     "NodeRouting": {},
     "WatchdogSeconds": 3,
-    "StaleSeconds": 3
+    "StaleSeconds": 3,
+    "ReconnectBaseSeconds": 1,
+    "ReconnectMaxSeconds": 30
   }
 }

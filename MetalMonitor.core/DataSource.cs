@@ -97,7 +97,9 @@ namespace MetalMonitor.Core
         /// <summary>有字节无有效帧：能收到字节，但看门狗周期内没有一帧通过校验（乱码/波特率/协议不匹配）。</summary>
         NoValidFrame,
         /// <summary>无信号：看门狗周期内连一个字节都没收到（线断/对端断电/无输出）。</summary>
-        NoSignal
+        NoSignal,
+        /// <summary>重连中：已断开，后台按指数退避重试（D-13/STEP-11）。</summary>
+        Reconnecting
     }
 
     /// <summary>
@@ -146,9 +148,10 @@ namespace MetalMonitor.Core
         /// <param name="lastByteMs">最近一次收到任意字节的时刻；0 表示本次连接后从未收到。</param>
         /// <param name="lastValidFrameMs">最近一次收到有效帧（CRC 通过）的时刻；0 表示从未收到。</param>
         /// <param name="watchdogSeconds">看门狗周期（秒），非正值按 1 处理。</param>
-        internal static LinkHealth Evaluate(long nowMs, long connectedAtMs, long lastByteMs, long lastValidFrameMs, int watchdogSeconds)
+        /// <param name="reconnecting">重连循环是否正在跑（断口时决定 Inactive 还是 Reconnecting）。</param>
+        internal static LinkHealth Evaluate(long nowMs, long connectedAtMs, long lastByteMs, long lastValidFrameMs, int watchdogSeconds, bool reconnecting = false)
         {
-            if (connectedAtMs <= 0) return LinkHealth.Inactive;
+            if (connectedAtMs <= 0) return reconnecting ? LinkHealth.Reconnecting : LinkHealth.Inactive;
 
             long watchdogMs = Math.Max(1, watchdogSeconds) * 1000L;
 
@@ -190,6 +193,41 @@ namespace MetalMonitor.Core
 
             // 超期且链路明确故障 → 不可信；链路正常或未知 → 只标陈旧（不夸大成故障）
             return linkFaulted ? MetricQuality.Bad : MetricQuality.Stale;
+        }
+    }
+
+    /// <summary>
+    /// 指数退避 + 抖动纯函数（无状态、无 IO，便于单测）。
+    /// </summary>
+    /// <remarks>
+    /// 公式：delay = min(base * 2^attempt, max)，然后乘以 [0.8, 1.2] 抖动。
+    /// Attempt 为 0 时直接返回 base（首次重连无翻倍）；base/max 已由调用方归一成合法正整数。
+    /// </remarks>
+    internal static class ReconnectBackoff
+    {
+        /// <summary>
+        /// 计算第 attempt 次重连前需要等待的毫秒数。
+        /// </summary>
+        /// <param name="attempt">当前尝试次数（0 起，0 = 首次立即试）。</param>
+        /// <param name="baseSeconds">基准退避秒数（非正值按 1 处理）。</param>
+        /// <param name="maxSeconds">封顶秒数（小于 baseSeconds 时与 baseSeconds 对齐）。</param>
+        /// <param name="rng">随机数发生器；null 时用线程静态 Random.Shared。</param>
+        /// <returns>等待毫秒数（已含抖动）。</returns>
+        internal static int GetDelayMs(int attempt, int baseSeconds, int maxSeconds, Random? rng = null)
+        {
+            if (attempt < 0) attempt = 0;
+            int b = Math.Max(1, baseSeconds);
+            int cap = Math.Max(b, maxSeconds);
+
+            // 指数递增：base * 2^attempt，整数幂计算；尝试次数足够多时封顶
+            long rawMs = (long)b * 1000L * (1L << Math.Min(attempt, 30));
+            int capMs = cap * 1000;
+            int baseDelayMs = rawMs > capMs ? capMs : (int)rawMs;
+
+            // ±20% 抖动，避免多设备同步冲击
+            double jitter = (rng ?? Random.Shared).NextDouble() * 0.4 - 0.2;   // [-0.2, +0.2]
+            double finalMs = baseDelayMs * (1.0 + jitter);
+            return (int)Math.Clamp(finalMs, 50, capMs);   // 至少 50ms，避免瞬时自旋
         }
     }
 }

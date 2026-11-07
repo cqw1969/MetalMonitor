@@ -95,6 +95,35 @@ namespace MetalMonitor.Core
             }
         }
 
+        // ===== 端口漂移候选（D-18，STEP-19）=====
+        /// <summary>最近成功连接过的串口名（最多 5 个，最近成功排最前）；只读快照，写入走 <see cref="RecordSerialPortSuccess"/>。</summary>
+        public IReadOnlyList<string> SerialKnownPorts =>
+            _config.Serial?.KnownPorts is { Count: > 0 } known ? known.ToArray() : Array.Empty<string>();
+
+        /// <summary>
+        /// 记录一次"验证通过"的连接（D-18）：端口名置顶到候选列表、去重、截断到 5 个，同时更新 PortName 并立即落盘。
+        /// </summary>
+        /// <param name="portName">已验证可用的串口名；空值直接忽略。</param>
+        public void RecordSerialPortSuccess(string portName)
+        {
+            if (string.IsNullOrWhiteSpace(portName)) return;
+
+            _config.Serial ??= new SerialConfig();
+            _config.Serial.KnownPorts ??= new List<string>();
+            var known = _config.Serial.KnownPorts;
+
+            known.RemoveAll(p => string.Equals(p, portName, StringComparison.OrdinalIgnoreCase));
+            known.Insert(0, portName);
+            if (known.Count > MaxKnownPorts)
+                known.RemoveRange(MaxKnownPorts, known.Count - MaxKnownPorts);
+
+            _config.Serial.PortName = portName;
+            SaveConfig();
+        }
+
+        /// <summary>候选端口列表容量上限：够覆盖换口/换机，又不至于无限膨胀。</summary>
+        private const int MaxKnownPorts = 5;
+
         /// <summary>
         /// NODE_ID → 设备名 路由表的启动只读快照（机制/策略分离：路由是策略，仅此一读）。
         /// 每次调用按当前内存副本新建只读字典，键为 NODE_ID 字节值；
@@ -126,14 +155,23 @@ namespace MetalMonitor.Core
         /// </summary>
         public int SerialWatchdogSeconds => NormalizeSeconds(_config.Serial?.WatchdogSeconds);
 
-        /// <summary>
-        /// 指标陈旧阈值（秒）：指标值超过该时长未更新即降级质量码。
+        /// <summary>指标陈旧阈值（秒）：指标值超过该时长未更新即降级质量码。
         /// 启动只读；非正值或超过 60 的异常值回退默认 3 秒。
         /// </summary>
         public int MetricStaleSeconds => NormalizeSeconds(_config.Serial?.StaleSeconds);
 
-        /// <summary>把配置中的秒数归一化到合法区间 [1, 60]，非法/缺失回退 3。</summary>
-        private static int NormalizeSeconds(int? value) => value is > 0 and <= 60 ? value.Value : 3;
+        /// <summary>自动重连基准退避秒数（指数起点）。
+        /// 启动只读；非正值或超过 60 的异常值回退默认 1 秒。
+        /// </summary>
+        public int SerialReconnectBaseSeconds => NormalizeSeconds(_config.Serial?.ReconnectBaseSeconds, defaultIfInvalid: 1);
+
+        /// <summary>自动重连封顶退避秒数。
+        /// 启动只读；非法值回退默认 30 秒；运行期若小于基准，由重连循环侧强制对齐。
+        /// </summary>
+        public int SerialReconnectMaxSeconds => NormalizeSeconds(_config.Serial?.ReconnectMaxSeconds, defaultIfInvalid: 30);
+
+        /// <summary>把配置中的秒数归一化到合法区间 [1, 60]，非法/缺失回退指定默认值。</summary>
+        private static int NormalizeSeconds(int? value, int defaultIfInvalid = 3) => value is > 0 and <= 60 ? value.Value : defaultIfInvalid;
 
         /// <summary>
         /// 以自动定位的 config.json 路径初始化配置服务，并立即从磁盘加载配置。
@@ -258,12 +296,18 @@ namespace MetalMonitor.Core
         {
             /// <summary>上次成功使用的串口名（如 "COM3"）；空 = 未持久化。</summary>
             public string PortName { get; set; } = string.Empty;
+            /// <summary>最近成功连接过的串口名（最近成功排最前，最多 5 个）；旧配置无此字段时为 null，由写入方补齐。</summary>
+            public List<string>? KnownPorts { get; set; } = new();
             /// <summary>NODE_ID 路由表：JSON 键 = NODE_ID 十六进制字符串（如 "2A"），值 = 设备名；只读段，程序永不写。</summary>
             public Dictionary<string, string> NodeRouting { get; set; } = new();
             /// <summary>串口链路看门狗周期（秒），默认 3；启动只读，运行中修改不生效。</summary>
             public int WatchdogSeconds { get; set; } = 3;
             /// <summary>指标陈旧阈值（秒），默认 3；启动只读，运行中修改不生效。</summary>
             public int StaleSeconds { get; set; } = 3;
+            /// <summary>自动重连基准退避秒数（指数起点），默认 1；启动只读。</summary>
+            public int ReconnectBaseSeconds { get; set; } = 1;
+            /// <summary>自动重连封顶退避秒数，默认 30；小于基准时会被强制归一成基准值。</summary>
+            public int ReconnectMaxSeconds { get; set; } = 30;
         }
     }
 }

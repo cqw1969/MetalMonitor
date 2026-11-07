@@ -43,9 +43,9 @@ namespace MetalMonitor.Tests
         }
 
         // 构造带串口能力的服务：数据源固定为"串口"，空设备列表（本文件只验证链路判据）
-        private DeviceService CreateService(Mock<ISerialService>? serial = null)
+        private DeviceService CreateService(Mock<ISerialService>? serial = null, ConfigService? config = null)
         {
-            var config = new ConfigService(Path.Combine(_tempDir, "config.json")) { DataSource = "串口" };
+            config ??= new ConfigService(Path.Combine(_tempDir, "config.json")) { DataSource = "串口" };
 
             var mqtt = new Mock<IMqttService>();
             mqtt.SetupGet(x => x.IsConnected).Returns(false);
@@ -160,6 +160,63 @@ namespace MetalMonitor.Tests
             Assert.Equal(LinkHealth.Inactive, svc.LinkHealth);
             Assert.Equal(LinkHealth.Inactive, changes[changes.Count - 1].Health);
             Assert.Equal("串口未连接", changes[changes.Count - 1].Reason);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Reconnecting 第六态（STEP-11 / D-13）
+        // ═══════════════════════════════════════════════════════════
+        [Theory]
+        // 断开且重连循环在跑 → Reconnecting
+        [InlineData(10000, 0, 5000, 5000, true, LinkHealth.Reconnecting)]
+        // 断开但无重连循环 → Inactive（默认参数）
+        [InlineData(10000, 0, 5000, 5000, false, LinkHealth.Inactive)]
+        // 已连接状态不受 reconnecting 参数影响
+        [InlineData(5000, 1000, 4500, 4800, true, LinkHealth.Healthy)]
+        [InlineData(5000, 1000, 4500, 4800, false, LinkHealth.Healthy)]
+        public void Evaluate_WithReconnectingFlag_ReturnsExpected(long now, long connectedAt, long lastByte, long lastValidFrame, bool reconnecting, LinkHealth expected)
+        {
+            var actual = LinkHealthEvaluator.Evaluate(now, connectedAt, lastByte, lastValidFrame, 3, reconnecting);
+            Assert.Equal(expected, actual);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // 窗口丙：启动从未连上 + 小本子非空 + 设备插在没记过的口（STEP-22）
+        // ═══════════════════════════════════════════════════════════
+        /// <summary>
+        /// 复现修复前的卡死场景：
+        ///   · LinkHealth 仍是 Inactive（本次启动从未连上）→ 理由一不成立
+        ///   · 小本子记着 COM3，但当前在场的只有 COM5 → SerialPortAppeared 返回 false → 理由二原本也不成立
+        /// 修复后理由二放宽为"有任意串口在场"，应能派出重连循环（可观察信号：顶栏收到"检测到串口设备接入"）。
+        /// </summary>
+        [Fact]
+        public async Task Reconnect_StartsWhenRememberedPortsAbsentButAnotherPortPresent()
+        {
+            var serial = new Mock<ISerialService>();
+            serial.SetupGet(x => x.IsAvailable).Returns(true);
+            serial.SetupGet(x => x.IsConnected).Returns(false);
+            serial.Setup(x => x.GetAvailablePorts()).Returns(new[] { "COM5" });   // 在场的口本子上没记过
+            serial.Setup(x => x.ConnectAsync(It.IsAny<string>())).Returns(Task.CompletedTask);
+            serial.Setup(x => x.DisconnectAsync()).Returns(Task.CompletedTask);
+
+            var config = new ConfigService(Path.Combine(_tempDir, "config-window-c.json")) { DataSource = "串口" };
+            config.RecordSerialPortSuccess("COM3");   // 小本子非空，但 COM3 现在不在场
+
+            var svc = CreateService(serial, config);
+            var states = new List<DataSourceStateChangedEventArgs>();
+            svc.DataSourceStateChanged += (s, e) => states.Add(e);
+
+            try
+            {
+                await svc.UpdateDevicesAsync();   // 第一拍心跳即进入 TryStartReconnect
+            }
+            finally
+            {
+                svc.Dispose();                    // 叫停后台重连循环，避免测试泄漏
+            }
+
+            Assert.Contains(states, e => e.State == DataSourceState.Faulted
+                                          && e.Reason != null
+                                          && e.Reason.Contains("检测到串口设备接入"));
         }
     }
 }
