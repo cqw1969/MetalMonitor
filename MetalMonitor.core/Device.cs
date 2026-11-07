@@ -8,7 +8,7 @@ namespace MetalMonitor.Core
     /// <summary>
     /// 设备实体 + 变更广播中枢：对应数据库 Devices 表的一行，同时用
     /// MetricValueChanged / PropertyChanged 事件把值变化实时广播给 UI 卡片。
-    /// 指标值与报警状态用 ConcurrentDictionary——心跳/MQTT/未来串口三个线程来源都会写入。
+    /// 指标值与报警状态用 ConcurrentDictionary——心跳/MQTT/串口三个线程来源都会写入。
     /// </summary>
     public class Device : INotifyPropertyChanged
     {

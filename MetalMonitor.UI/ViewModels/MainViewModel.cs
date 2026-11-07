@@ -8,8 +8,6 @@ using System.Threading;
 using System.Timers;
 using System.Windows;
 
-//using System.Diagnostics;
-
 namespace MetalMonitor.UI.ViewModels
 {
     /// <summary>
@@ -31,7 +29,7 @@ namespace MetalMonitor.UI.ViewModels
         /// <summary>数据库服务，提供数据库路径查询与更改等能力。</summary>
         private readonly IDatabaseService _databaseService;
         /// <summary>定时器回调防重入标记：0 空闲、1 正在更新，通过 <see cref="Interlocked"/> 原子操作访问。</summary>
-        private int _isUpdating = 0; // 防重入标记
+        private int _isUpdating = 0;
 
         /// <summary>当前选中设备的详情视图模型（当前由卡片点击打开独立窗口，该属性保留绑定用途）。</summary>
         private DeviceDetailViewModel? _selectedDeviceDetail;
@@ -53,7 +51,6 @@ namespace MetalMonitor.UI.ViewModels
         public ObservableCollection<string> AlarmLogs { get; set; } = new BoundedObservableCollection<string>(200);
 
         /// <summary>可选指标配置列表（含停用指标，停用后卡片显示灰色失效态），绑定主界面指标下拉框。</summary>
-        // 可选指标列表（含停用指标，停用后卡片显示灰色失效态）
         public ObservableCollection<MetricConfig> AvailableMetrics { get; } = new();
 
         /// <summary>当前所有卡片统一展示的指标名称（ backing field ），默认 Temperature。</summary>

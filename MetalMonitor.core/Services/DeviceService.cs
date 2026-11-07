@@ -9,14 +9,10 @@ using DataSourceKind = MetalMonitor.Core.DataSource;
 namespace MetalMonitor.core.Services
 {
     /// <summary>
-    /// 核心枢纽（架构定位）：数据管线中转站，UI 层只与本类对话（门面）。
-    /// 三条数据通路（接入事件驱动 + 派发节拍驱动）：
-    ///   接入段（各自线程）：解析/生成 → 写暂存区（同键 latest-wins）+ 追加落库缓冲（保真）
-    ///   派发段（心跳 1Hz）：排空暂存区 → 报警判断 → SetMetricValue 触发 UI 事件（见 ApplyPendingSamples）
-    ///   ①模拟数据 UpdateDeviceData（UI 线程，心跳驱动）
-    ///   ②MQTT OnMqttMessageReceived（MQTTnet 后台线程，消息驱动）
-    ///   ③串口（串口后台线程，帧驱动，见 SetDataSourceAsync 的 case DataSourceKind.Serial）
-    /// 三个线程来源都要摸 _devices/_pendingBatch/_pendingSamples，这是 _devicesLock/_batchLock/_stagingLock 存在的原因。
+    /// 核心枢纽：数据管线中转站，UI 层只与本类对话。
+    /// 接入段由各数据源线程写入暂存区（同键 latest-wins）并追加落库缓冲，派发段由 1Hz 心跳完成报警判断与 UI 事件触发。
+    /// 数据源：模拟数据（UI 线程）、MQTT（后台线程）、串口（后台线程）。
+    /// 上述线程共享 _devices / _pendingBatch / _pendingSamples，分别由 _devicesLock / _batchLock / _stagingLock 保护。
     /// </summary>
     public class DeviceService : IDeviceService, IDisposable
     {
@@ -25,12 +21,12 @@ namespace MetalMonitor.core.Services
         // 值更新靠对象上的事件广播推给 UI，而不是每次重新查库
         /// <summary>设备"活体"集合：首次心跳时从数据库同步，之后与 UI 卡片共享同一批对象实例。</summary>
         private readonly List<Device> _devices;
-        // D3：按设备名索引，把 UpdateDeviceFromMqtt 的 O(n) 线性查找降为 O(1)。
+        // 按设备名索引，把 UpdateDeviceFromMqtt 的 O(n) 线性查找降为 O(1)。
         // 与 _devices 同一把 _devicesLock 保护，且只在唯一的结构变更点
         // SyncDevicesFromDatabaseAsync（增删与改名都在其锁内）整体重建，故不会失效
         /// <summary>按设备名索引（与 <see cref="_devices"/> 同锁保护、同点重建），避免热路径线性扫集合。</summary>
         private readonly Dictionary<string, Device> _devicesByName = new();
-        // 三条线程来源（UI 心跳 / MQTT 后台线程 / 未来串口线程）都会读写它，全靠这把锁串行化
+        // 三条线程来源（UI 心跳 / MQTT 后台线程 / 串口后台线程）都会读写它，统一由这把锁串行化
         /// <summary>保护 <see cref="_devices"/> 集合结构与遍历的同步锁（对象内部状态由 Device 自身保证线程安全）。</summary>
         private readonly object _devicesLock = new();
 
@@ -50,31 +46,31 @@ namespace MetalMonitor.core.Services
         private readonly FrameRouter? _frameRouter;
 
         // ===== 接入层暂存区（latest-wins）=====
-        // 串口/MQTT 的后台线程收到样本后先写这里，心跳排空时统一执行"业务三步"，
-        // 避免后台线程以收报频率直接触碰 UI 绑定的 Device（值写入会触发 UI 事件）
-        /// <summary>线程安全暂存区：键为「设备对象 + 指标名」，同一键只保留最新值；由心跳排空后统一派发。</summary>
+        // 各数据源线程收到样本后先写此处，由心跳统一排空处理，避免后台线程直接写入 UI 绑定的 Device
+        /// <summary>线程安全暂存区：键为「设备对象 + 指标名」，同一键只保留最新值。</summary>
         private readonly Dictionary<(Device Device, string Metric), double> _pendingSamples = new();
         /// <summary>保护 <see cref="_pendingSamples"/> 的同步锁；接入层后台线程与心跳线程都会读写。</summary>
         private readonly object _stagingLock = new();
 
         // ===== 模拟数据通路专用 =====
-        /// <summary>模拟数据随机数发生器，用于生成平滑随机游走。</summary>
+        // 仅在模拟数据通路内使用：随机游走生成需要随机源与上一拍缓存
+        /// <summary>模拟数据随机数发生器。</summary>
         private readonly Random _random = new();
-        /// <summary>模拟数据平滑缓存，键为"设备Id:指标名"，值为上一拍生成值。</summary>
-        private readonly Dictionary<string, double> _lastSimValues = new(); // 模拟数据平滑用：上一值缓存
+        /// <summary>上一拍模拟值的缓存，键为「设备Id:指标名」，用于生成平滑随机游走。</summary>
+        private readonly Dictionary<string, double> _lastSimValues = new();
 
         // ===== 配置与运行状态旗标 =====
-        /// <summary>配置服务（DI 单例注入，全局唯一副本，与 DatabaseService 共享同一实例）。</summary>
+        /// <summary>配置服务（DI 单例，与 DatabaseService 共享同一实例）。</summary>
         private readonly ConfigService _configService;
-        /// <summary>设备列表是否已完成首次数据库同步的旗标。</summary>
-        private bool _devicesLoaded = false;                // 设备列表是否已完成首次同步
-        /// <summary>指标配置快照（整体替换式更新）：驱动模拟数据量程并作为报警阈值的来源。</summary>
-        private List<MetricConfig> _metricConfigs = new();  // 指标配置快照：驱动模拟量程与报警阈值
-        /// <summary>按指标名索引（D3：把 GetMetricUnit 的 O(n) 线性查找降为 O(1)），与 <see cref="_metricConfigs"/> 同批整体替换。</summary>
+        /// <summary>设备列表是否已完成首次数据库同步。</summary>
+        private bool _devicesLoaded = false;
+        /// <summary>指标配置快照（整体替换式更新）：驱动模拟数据量程并作为报警阈值来源。</summary>
+        private List<MetricConfig> _metricConfigs = new();
+        /// <summary>按指标名索引，与 <see cref="_metricConfigs"/> 同批整体替换，避免 GetMetricUnit 线性查找。</summary>
         private Dictionary<string, MetricConfig> _metricConfigsByName = new();
-        /// <summary>当前数据源，跨启动持久化在 config.json（存显示名，经 TryToDataSource 双向映射）。</summary>
-        private DataSourceKind _selectedDataSource = DataSourceKind.Simulation; // 当前数据源；显示名映射见 DataSourceExtensions（单一事实源）
-        /// <summary>数据源运行状态（三态）：只由 InitializeDataSourceAsync / SetDataSourceAsync 写入，单写者。</summary>
+        /// <summary>当前数据源；跨启动持久化在 config.json（存显示名，经 TryToDataSource 双向映射）。</summary>
+        private DataSourceKind _selectedDataSource = DataSourceKind.Simulation;
+        /// <summary>数据源运行状态（三态）：只由 InitializeDataSourceAsync / SetDataSourceAsync 写入。</summary>
         private DataSourceState _state = DataSourceState.Online;
         /// <summary>最近一次数据源故障原因；状态正常时清空。</summary>
         private string? _lastDataSourceError;
@@ -107,21 +103,21 @@ namespace MetalMonitor.core.Services
         /// </summary>
         private string[] _lastSeenSerialPorts = Array.Empty<string>();
 
-        // 批量写入缓冲：达到 BatchSize 条后自动落盘，退出/切换时立即 flush
+        // 批量写入缓冲：达到 BatchSize 条后自动落盘，退出/切换数据源时立即冲刷
         /// <summary>待落库记录缓冲队列，三条数据通路的第三步都汇入此处。</summary>
-        private readonly List<DataRecord> _pendingBatch = new();  // 缓冲队列：三步汇合点的第三步往这里塞
+        private readonly List<DataRecord> _pendingBatch = new();
         /// <summary>保护 <see cref="_pendingBatch"/> 的同步锁；锁内只做加入/取出+清空，写库在锁外。</summary>
-        private readonly object _batchLock = new();               // 保护 _pendingBatch（MQTT 线程与心跳线程都会写）
+        private readonly object _batchLock = new();
         /// <summary>串行化 SQLite 批量写入的异步信号量（1,1），防止多批数据并发写冲突。</summary>
-        private readonly SemaphoreSlim _flushLock = new(1, 1);    // 异步写库互斥：防止两批数据同时写 SQLite
+        private readonly SemaphoreSlim _flushLock = new(1, 1);
         /// <summary>WAL 检查点的固定周期：60 秒。</summary>
-        private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(60); // WAL 回收周期
+        private static readonly TimeSpan CheckpointInterval = TimeSpan.FromSeconds(60);
         /// <summary>自动落库触发条数，来自 config.json；非正值时回退默认 50。</summary>
-        private int _batchSize;                                   // 自动落库触发条数（来自 config.json，默认 50）
+        private int _batchSize;
         /// <summary>上次执行 WAL 检查点的 UTC 时间。</summary>
-        private DateTime _lastCheckpointUtc = DateTime.UtcNow;    // 上次 WAL 检查点时间
+        private DateTime _lastCheckpointUtc = DateTime.UtcNow;
         /// <summary>对象释放标记：置位后各数据通路与冲刷路径静默短路。</summary>
-        private volatile bool _disposed = false;                  // 释放标记：Dispose 后各路径静默短路
+        private volatile bool _disposed = false;
 
         /// <summary>每指标在内存中保留的最大历史点数（60）。</summary>
         public int MaxHistoryPoints { get; } = 60;
@@ -405,7 +401,7 @@ namespace MetalMonitor.core.Services
                 var dict = new Dictionary<string, MetricConfig>();
                 foreach (var c in _metricConfigs)
                     dict[c.Name] = c;
-                // D3：同一份字典既供报警阈值，也供单位查询——热路径不再每次线性扫 _metricConfigs
+                // 同一份字典既供报警阈值，也供单位查询——热路径不再每次线性扫 _metricConfigs
                 _metricConfigsByName = dict;
                 _alarmService.UpdateThresholds(dict);
             }
@@ -466,7 +462,7 @@ namespace MetalMonitor.core.Services
             // （Device 内部用 ConcurrentDictionary 已线程安全，避免长时间持锁）
             lock (_devicesLock)
             {
-                // D3：改用按名索引（语义与旧 FirstOrDefault 等价：同名取先出现者，见 RebuildDeviceIndex）
+                // 按名索引（语义与旧 FirstOrDefault 等价：同名取先出现者，见 RebuildDeviceIndex）
                 _devicesByName.TryGetValue(deviceData.Name, out device);
             }
             if (device == null || deviceData.Metrics == null)
@@ -677,9 +673,10 @@ namespace MetalMonitor.core.Services
             else
                 return;
 
-            // 抢位子：CAS 只有第一个人能把 0 换成 1，后面的都看见 1 直接放弃（避免两个心跳派两个人）
-            if (Interlocked.CompareExchange(ref _reconnectRunningFlag, 1, 0) != 0) return;   // 是1时return
-            if (_disposed) { Interlocked.Exchange(ref _reconnectRunningFlag, 0); return; }   // Dispose 窗口竞争
+            // CAS 占用运行标记：仅第一个调用者能把 0 换成 1，其余调用者见 1 直接返回，
+            // 避免心跳重复启动多个重连循环
+            if (Interlocked.CompareExchange(ref _reconnectRunningFlag, 1, 0) != 0) return;   // 已是 1 时返回
+            if (_disposed) { Interlocked.Exchange(ref _reconnectRunningFlag, 0); return; }   // Dispose 竞争
 
             // 断线与待接入均属故障恢复过程：顶栏第一行显示"连接失败"，与第二行"重连中"共同表达当前状态
             SetState(DataSourceState.Faulted, reason);
@@ -811,15 +808,15 @@ namespace MetalMonitor.core.Services
         }
 
         /// <summary>
-        /// "目标设备现在是不是插在电脑上"——注意问的是"在不在"，不管它是刚插的还是插了很久。
-        /// 用途：决定"根本还没连上时，要不要因为看见设备而主动去连一次"。
+        /// 目标设备当前是否在位——只判断"在不在"，不区分刚插入还是早已插入。
+        /// 用途：尚未连接时，是否因检测到串口设备而主动尝试连接一次。
         /// </summary>
         /// <remarks>
         /// 判断规则分两种情形：
         ///   · 记忆端口列表为空（首次使用或更换电脑）时，只要系统存在任意串口即判定为可能在线。
         ///   · 记忆端口列表非空时，其中任一端口在场即判定为可能在线。
-        ///     这样换口后名字变了（比如从三号变成四号），只要四号也曾经成功过，也能被发现。
-        /// 与 SerialPortNewlyAppeared 的区别：这个只回答"在不在"，那个回答"是不是刚来的"。
+        ///     换口后端口名变化（如 COM3 → COM4）时，只要新端口曾成功过即可被发现。
+        /// 与 SerialPortNewlyAppeared 的区别：本方法只回答"在不在"，后者回答"是不是刚出现"。
         /// </remarks>
         private bool SerialPortAppeared()
         {
@@ -827,61 +824,61 @@ namespace MetalMonitor.core.Services
             if (ports.Length == 0) return false;
 
             var remembered = GetRememberedPorts();
-            if (remembered.Count == 0) return true;   // 毫无记忆（首次运行/换机）：任何端口出现都算
+            if (remembered.Count == 0) return true;   // 无历史记录（首次运行/换机）：任何端口在场都算
 
-            // 本子上任意一个名字在场就算：换口后名字变了，只要新名字在本子上也能发现
+            // 历史端口任意一个在场即算：换口后端口名变化，只要新名字在历史列表中也能发现
             return ports.Any(p => remembered.Contains(p, StringComparer.OrdinalIgnoreCase));
         }
 
         /// <summary>
-        /// "是不是刚来了一个本子上记着的设备"——只有本次比上一拍多出来的端口才算（边沿判断）。
+        /// 本次是否新出现一个历史记录中的端口——只有相对上一拍新增的端口才算（边沿判断）。
         /// 用途：唤醒正在运行的重连循环，使其立即重试一次。
         /// </summary>
         /// <remarks>
-        /// 为什么必须"只认刚来的"：假设插着一个能打开、但收不到数据的设备（比如波特率不对），
-        /// 若以"在场"为唤醒条件，设备持续插着时每拍都会唤醒等待中的循环，
-        /// "失败后越等越久"的机制就完全失效，变成每 3 秒死磕一次。
-        /// 注意：调用一次就把基线更新成当前名单，所以同一个"新人"只会报一次。
+        /// 必须只认"新出现"：假设插入一个能打开但收不到数据的设备（如波特率不匹配），
+        /// 若以"在场"为唤醒条件，设备持续插入时每一拍都会唤醒退避等待中的循环，
+        /// 指数退避机制失效，退化为每 3 秒重试一次。
+        /// 注意：调用一次即把基线更新为当前端口列表，同一新增端口只会报告一次。
         /// </remarks>
         private bool SerialPortNewlyAppeared()
         {
             string[] ports = GetCurrentSerialPorts();
-            // 本次有、上次没有 = 新来的
+            // 本次有、上次没有 = 新出现
             var appeared = ports
                 .Where(p => !_lastSeenSerialPorts.Contains(p, StringComparer.OrdinalIgnoreCase))
                 .ToArray();
-            _lastSeenSerialPorts = ports;   // 基线前移：同一个"新人"只报一次
+            _lastSeenSerialPorts = ports;   // 基线前移：同一新增端口只报告一次
 
-            if (appeared.Length == 0) return false; //没有新的
+            if (appeared.Length == 0) return false;   // 无新增端口
 
             var remembered = GetRememberedPorts();
-            if (remembered.Count == 0) return true;   // 无记忆：新出现任何端口都算
-            return appeared.Any(p => remembered.Contains(p, StringComparer.OrdinalIgnoreCase)); //多出来的这个端口已被记录->true
+            if (remembered.Count == 0) return true;   // 无历史记录：任何新增端口都算
+            return appeared.Any(p => remembered.Contains(p, StringComparer.OrdinalIgnoreCase));
         }
 
         /// <summary>
-        /// 唤醒重连循环：取消当前等待，使循环立即继续执行一次连接尝试。
-        /// 循环没在睡觉时调用它什么也不会发生，所以调用方不用先判断"它睡没睡"。
+        /// 唤醒重连循环：取消当前退避等待，使循环立即执行一次连接尝试。
+        /// 循环未处于等待状态时调用无效果，调用方无需预先判断。
         /// </summary>
         private void WakeReconnectLoop()
         {
             try { _reconnectWakeCts?.Cancel(); }
-            catch (ObjectDisposedException) { /* 正赶上循环收尾把开关拆了，忽略即可 */ }
+            catch (ObjectDisposedException) { /* 循环收尾时已释放令牌源，忽略 */ }
         }
 
         /// <summary>
         /// 候选端口顺序：优先尝试记忆端口，其次按兜底规则枚举在场端口。
         /// </summary>
-        /// <returns>按顺序该试的端口名；没有串口服务时给空名单。</returns>
+        /// <returns>按顺序该试的端口名；没有串口服务时返回空列表。</returns>
         /// <remarks>
-        /// 三层，顺序有讲究：
-        ///   1. 上次成功的那个名字 —— 最可能一击命中，放第一。
-        ///   2. 本子上其他成功过的名字 —— 换口后新名字通常在这里。
-        ///   3. 兜底 —— 本子上的名字全都不在场时，才考虑"盲敲"：
-        ///      · 本子整体为空（第一次用）→ 把所有在场的门都试一遍，别直接放弃；
-        ///      · 只剩唯一一个门开着 → 试它。
-        /// 为什么第 3 层不无条件"把所有门都试一遍"：门越多，每试一个都要等 3 秒验证，
-        /// 会把一次恢复拖成十几秒；只有在完全没有线索时才值得这么做。
+        /// 三层顺序：
+        ///   1. 上次成功的端口，最可能直接命中。
+        ///   2. 历史成功过的其他端口，换口后新端口名通常在这里。
+        ///   3. 兜底：历史端口全部不在场时才盲试——
+        ///      · 历史列表为空（首次使用）→ 依次尝试所有在场端口；
+        ///      · 历史端口都不在场且系统只剩唯一端口 → 尝试它。
+        /// 第 3 层不无条件尝试全部端口：每个候选都要等一个看门狗周期验证，
+        /// 端口越多恢复耗时越长，只有完全没有线索时才值得逐个尝试。
         /// </remarks>
         private List<string> GetCandidatePorts()
         {
@@ -890,18 +887,18 @@ namespace MetalMonitor.core.Services
 
             string[] available = _serialService.GetAvailablePorts();
 
-            // 第一层、第二层：上次成功的名字 → 本子上其他名字（GetRememberedPorts 已去重且保序）
+            // 第一层、第二层：上次成功的端口 → 历史端口（GetRememberedPorts 已去重且保序）
             candidates.AddRange(GetRememberedPorts());
 
             if (candidates.Count == 0)
             {
-                // 第三层之一：手里一个名字都没有（第一次用/换电脑），挨个试所有在场的门，而不是直接放弃。
-                // 排序只是为了让每次尝试顺序一致、便于复现问题，不代表谁更优先。
+                // 第三层之一：历史列表为空（首次使用/换电脑），依次尝试所有在场端口，不直接放弃。
+                // 排序只为让每次尝试顺序一致、便于复现问题，不代表优先级。
                 candidates.AddRange(available.OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
             }
             else if (!candidates.Any(p => available.Contains(p, StringComparer.OrdinalIgnoreCase)) && available.Length == 1)
             {
-                // 第三层之二：本子上的名字全都不在场，而电脑上刚好多出唯一一个门——试它
+                // 第三层之二：历史端口都不在场，且系统只剩唯一端口——尝试它
                 candidates.Add(available[0]);
             }
 
@@ -909,22 +906,22 @@ namespace MetalMonitor.core.Services
         }
 
         /// <summary>
-        /// 试一个门：推开它，然后站在原地听 3 秒，看里面有没有人说话（收到真正的数据）。
-        /// 有人说话才回来报"成功"，没人说话就关上门，让外面去试下一个。
+        /// 连接指定端口并验证：连接后等待一个看门狗周期，期间收到有效帧才判定成功；
+        /// 验证失败则断开连接，交由调用方尝试下一个候选端口。
         /// </summary>
         /// <remarks>
-        /// 为什么要听 3 秒而不是"推开就报成功"：推开只证明这个门没锁，
-        /// 门后面完全可能是别的设备（比如另一块板、一个别的串口工具），一条数据都不会来。
-        /// 为什么听 3 秒这个数：它和看门狗用的是同一个值——"3 秒没数据就认为断了"，
-        /// 反过来"3 秒内来了数据就认为通"，两个判断用同一把尺子，不会出现自相矛盾的标准。
-        /// 为什么失败必须关上门：不关的话句柄一直被占着，下一个门可能因此打不开，看似"所有门都不行"。
+        /// 连接成功本身只说明端口可用，不保证对端是本项目的设备（也可能是其他串口设备），
+        /// 因此必须在看门狗周期内收到通过 CRC 校验的帧才能判定成功。
+        /// 验证窗口时长与链路看门狗阈值一致（同为 SerialWatchdogSeconds），
+        /// 避免出现"验证通过但看门狗立刻判故障"的矛盾标准。
+        /// 验证失败必须断开：否则串口句柄被占用，后续候选端口可能无法打开。
         /// </remarks>
-        /// <param name="portName">要试的门牌号。</param>
+        /// <param name="portName">待验证的端口名。</param>
         /// <param name="ct">终止信号（切换数据源或关闭程序）；唤醒信号不传入，避免中断正在进行的验证窗口。</param>
-        /// <returns>Ok = 是否通过倾听（通过时已经报"正常"并把门牌号写回配置）；Error = 推门时的异常信息（倾听没过则为 null）。</returns>
+        /// <returns>Ok = 是否通过验证（通过时已上报正常状态并记录成功端口）；Error = 连接异常信息（验证未通过时为 null）。</returns>
         private async Task<(bool Ok, string? Error)> TryConnectVerifiedAsync(string portName, CancellationToken ct)
         {
-            // 记住"推门之前，最后一次听到声音是什么时候"，之后只看它有没有往后走
+            // 记录验证开始前的最后有效帧时刻，之后只比较该时间戳是否前移
             long beforeFrameMs = Volatile.Read(ref _lastSerialValidFrameMs);
             try
             {
@@ -937,25 +934,25 @@ namespace MetalMonitor.core.Services
 
             try
             {
-                // 这就是"站在原地听 3 秒"：期间只要收到一帧通过校验的数据，下面的时间戳就会往后走
+                // 验证窗口：期间只要收到一帧通过校验的数据，上述时间戳就会前移
                 await Task.Delay(_configService.SerialWatchdogSeconds * 1000, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                // 倾听过程中被要求收工（切源/关程序）：先把门关上再走，别把句柄漏在那儿
+                // 验证期间被取消（切源/关程序）：先断开再返回，避免遗留句柄
                 try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
                 return (false, null);
             }
 
             if (Volatile.Read(ref _lastSerialValidFrameMs) > beforeFrameMs)
             {
-                // 连接成功：更新上次成功端口与历史端口列表（在同一方法内完成，避免两处记录不一致）
+                // 验证通过：更新上次成功端口与历史端口列表（在同一方法内完成，避免两处记录不一致）
                 _configService.RecordSerialPortSuccess(portName);
                 SetState(DataSourceState.Online, null);
                 return (true, null);
             }
 
-            // 3 秒内一声没听到：门后不是我们的设备（或者波特率不对），关上门去试下一个
+            // 验证窗口内未收到有效帧：对端不是本项目设备或波特率不匹配，断开后尝试下一个
             try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
             return (false, null);
         }
@@ -1224,7 +1221,7 @@ namespace MetalMonitor.core.Services
             await CheckpointIfNeededAsync().ConfigureAwait(false);
         }
 
-        // D3：整体重建设备名索引。调用方必须已持有 _devicesLock
+        // 整体重建设备名索引。调用方必须已持有 _devicesLock
         /// <summary>
         /// 按设备名整体重建 <see cref="_devicesByName"/>（调用方必须已持有 <see cref="_devicesLock"/>）。
         /// </summary>
@@ -1296,7 +1293,7 @@ namespace MetalMonitor.core.Services
                     }
                 }
 
-                // D3：设备集合唯一的结构变更点（增删与改名都在上面的锁内完成），
+                // 设备集合唯一的结构变更点（增删与改名都在上面的锁内完成），
                 // 索引在此整体重建即可与 _devices 强一致，无需增量维护
                 RebuildDeviceIndex();
 
@@ -1305,7 +1302,7 @@ namespace MetalMonitor.core.Services
         }
 
         /// <summary>
-        /// 转发报警服务的无状态阈值越限判断（门面对外暴露）。
+        /// 转发报警服务的无状态阈值越限判断（对外暴露的查询接口）。
         /// </summary>
         /// <param name="metricName">指标名称。</param>
         /// <param name="value">待判定的指标当前值。</param>
@@ -1316,7 +1313,7 @@ namespace MetalMonitor.core.Services
         }
 
         /// <summary>
-        /// 转发查询指定指标当前配置的报警阈值（门面对外暴露）。
+        /// 转发查询指定指标当前配置的报警阈值（对外暴露的查询接口）。
         /// </summary>
         /// <param name="metricName">指标名称。</param>
         /// <returns>报警阈值；指标未配置时为 0。</returns>
@@ -1406,7 +1403,7 @@ namespace MetalMonitor.core.Services
         /// 冲刷内核：不检查释放标记，仅供 <see cref="Dispose"/> 在置位后兜底排空。
         /// </summary>
         /// <returns>表示异步冲刷操作的任务；无数据库服务或缓冲为空时立即完成。</returns>
-        /// <remarks>与 <see cref="FlushAsync"/> 的唯一区别是不查 <c>_disposed</c>——否则"先置位再冲刷"会被门卫挡住。</remarks>
+        /// <remarks>与 <see cref="FlushAsync"/> 的唯一区别是不检查 <c>_disposed</c>，以支持"先置位标记再冲刷"的释放顺序。</remarks>
         private async Task FlushCoreAsync()
         {
             if (_databaseService == null) return;
@@ -1501,12 +1498,12 @@ namespace MetalMonitor.core.Services
         {
             if (_disposed) return;
 
-            CancelReconnect();   // 窗口关闭时立即叫停后台重连循环
+            CancelReconnect();   // 窗口关闭时立即停止后台重连循环
 
-            // 退出时立即落盘剩余缓冲数据
-            //关于这里,是不是该在清空之前停止心跳,否则心跳线程可能还在往_pendingBatch里加数据,导致数据丢失
-            _disposed = true;   // 先关门：心跳/MQTT/串口的所有入队入口（EnqueueDataRecord 等）立即短路
-            try { FlushCoreAsync().GetAwaiter().GetResult(); } catch { }   // 再扫地：专用内核不看 _disposed
+            // 先置位释放标记，阻断心跳/MQTT/串口的所有入队入口（EnqueueDataRecord 等），
+            // 再冲刷剩余缓冲，避免冲刷期间仍有线程写入造成遗漏
+            _disposed = true;
+            try { FlushCoreAsync().GetAwaiter().GetResult(); } catch { }   // 专用内核不检查 _disposed
 
             // 退订注入服务的接线（不 Dispose 注入进来的服务——其生命周期由 DI 容器负责）
             if (_mqttService != null)

@@ -12,7 +12,7 @@ Console.WriteLine(result == 0x070C ? "PASS" : "FAIL");
 // 附加验证：空数据应原样返回初值
 Console.WriteLine($"空数据 -> 0x{ComputeCrc16(Array.Empty<byte>()):X4}  (期望 0xFFFF)");
 
-// T3.4 新帧向量：CRC 覆盖范围改为从 NODE_ID 起共 8 字节（PROTOCOL v0.9 修订2 §6）
+// 新帧向量：CRC 覆盖范围从 NODE_ID 起共 8 字节（PROTOCOL v0.9 修订2 §6）
 // 载荷 = NODE_ID(00) + LEN(06) + CMD(01) + 温度(0x00FD=25.3℃) + mV(0x0CE2=3298mV) + 状态(01)
 byte[] nodeFrameVector = { 0x00, 0x06, 0x01, 0xFD, 0x00, 0xE2, 0x0C, 0x01 };
 ushort nodeResult = ComputeCrc16(nodeFrameVector);

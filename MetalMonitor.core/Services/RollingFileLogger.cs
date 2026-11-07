@@ -15,7 +15,7 @@ namespace MetalMonitor.Core
     public class RollingFileLogger
     {
         /// <summary>默认单文件大小上限：5 MB，达到后滚动到新文件。</summary>
-        public const long DefaultMaxFileBytes = 5L * 1024 * 1024; // 5MB
+        public const long DefaultMaxFileBytes = 5L * 1024 * 1024;
         /// <summary>默认保留的日志文件数量上限：10 个。</summary>
         public const int DefaultMaxFileCount = 10;
         /// <summary>默认超限时一次删除的最早文件个数：5 个。</summary>

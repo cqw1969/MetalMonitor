@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 namespace MetalMonitor.Core
 {
     /// <summary>
-    /// 串口数据源。按 PROTOCOL.md v0.9 配置：115200 波特率、8 数据位、1 停止位、无校验。
+    /// 串口数据源。按 docs/protocol/PROTOCOL.md v0.9 配置：115200 波特率、8 数据位、1 停止位、无校验。
     /// 注意：DataReceived/ConnectionStateChanged 事件由 SerialPort 内部后台线程触发（非 UI 线程）。
     /// 本服务仅负责接收原始字节，不进行帧解析；帧组装与 CRC 校验由 FrameParser 负责。
     /// </summary>
@@ -18,8 +18,7 @@ namespace MetalMonitor.Core
         /// <summary>获取当前串口是否处于打开状态。</summary>
         public bool IsConnected => _serialPort?.IsOpen ?? false;
 
-        // 能力维度：每次访问实时查询注册表端口名单（本机实测约 26 微秒/次），
-        // 每次访问实时查询，USB 串口热插拔后无需重启进程即可反映真实状态
+        // 能力维度：每次访问实时查询注册表端口名单，USB 串口热插拔后无需重启进程即可反映真实状态
         /// <summary>当前系统是否存在串口硬件（动态查询，热插拔即时反映）。</summary>
         public bool IsAvailable => SerialPort.GetPortNames().Length > 0;
 
@@ -46,7 +45,7 @@ namespace MetalMonitor.Core
         }
 
         /// <summary>
-        /// 打开指定串口，按 PROTOCOL.md v0.9 §1 配置 115200 8N1。
+        /// 打开指定串口，按 docs/protocol/PROTOCOL.md v0.9 §1 配置 115200 8N1。
         /// </summary>
         /// <param name="portName">串口名称，如 "COM3"。</param>
         /// <returns>表示异步连接操作的任务。</returns>
@@ -72,7 +71,7 @@ namespace MetalMonitor.Core
                 _serialPort.Close();
             }
 
-            // 创建并配置串口（参数来自 PROTOCOL.md v0.9 §1 物理层）
+            // 创建并配置串口（参数来自 docs/protocol/PROTOCOL.md v0.9 §1 物理层）
             _serialPort = new SerialPort(portName, 115200)
             {
                 DataBits = 8,

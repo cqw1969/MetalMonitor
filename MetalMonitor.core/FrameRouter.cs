@@ -4,7 +4,7 @@ namespace MetalMonitor.Core
 {
     /// <summary>
     /// 帧路由去向：一帧的 NODE_ID 经路由判定后可能的四种结果。
-    /// 边界约定见 PROTOCOL.md §2.1：0x00=单节点/未分配（缺省取第一台）、
+    /// 边界约定见 docs/protocol/PROTOCOL.md §2.1：0x00=单节点/未分配（缺省取第一台）、
     /// 0x01~0xFE=多节点地址（查路由表）、0xFF=保留（不参与路由）。
     /// </summary>
     public enum RouteOutcome

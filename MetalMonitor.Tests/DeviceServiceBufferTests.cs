@@ -304,7 +304,7 @@ namespace MetalMonitor.Tests
                .ReturnsAsync(Devices(new Device("2号冲压机") { Id = "d1" }));
             await svc.ReloadDevicesAsync();
 
-            // D3 回归点：索引若未重建，改名后的消息会落进"设备不存在"分支而静默丢弃
+            // 回归点：索引若未重建，改名后的消息会落进"设备不存在"分支而静默丢弃
             var payload = JsonSerializer.Serialize(new
             {
                 Id = "device-001",
