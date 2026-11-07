@@ -81,7 +81,7 @@ namespace MetalMonitor.Tests
             Assert.Equal(77, svc.BatchSize);
         }
 
-        // ===== T3.4 第④步：Serial 段（端口持久化 + NODE_ID 路由表）=====
+        // ===== Serial 段：端口持久化 + NODE_ID 路由表 =====
 
         /// <summary>
         /// 串口名写后持久化：跨实例（模拟重启）读回一致。
@@ -147,7 +147,7 @@ namespace MetalMonitor.Tests
             Assert.Contains("\"Serial\"", File.ReadAllText(_configPath));
         }
 
-        // ===== T4.1：链路看门狗与指标陈旧阈值（启动只读）=====
+        // ===== 链路看门狗与指标陈旧阈值（启动只读）=====
 
         /// <summary>
         /// 缺省值：未配置时看门狗与陈旧阈值均为 3 秒。

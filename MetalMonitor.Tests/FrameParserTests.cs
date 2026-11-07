@@ -7,7 +7,7 @@ namespace MetalMonitor.Tests
     /// <summary>
     /// FrameParser 状态机单元测试。
     ///
-    /// 测试用例（对应 T3.3/T3.4 验收：正常帧/半帧/粘包/坏 CRC/NODE_ID）：
+    /// 测试用例（正常帧/半帧/粘包/坏 CRC/NODE_ID）：
     ///   1. 正常帧：完整 12 字节帧一次性喂入 → 触发 FrameParsed，NODE_ID/温度/电压/状态正确
     ///   2. 半帧：分两次喂入（先 5 字节后 7 字节）→ 正确解析
     ///   3. 粘包：一次喂入 24 字节（两帧连发）→ 触发两次 FrameParsed
@@ -268,7 +268,7 @@ namespace MetalMonitor.Tests
 
         // ═══════════════════════════════════════════════════════════
         // NODE_ID 提取用例：NODE_ID=0x2A 的帧被完整解析，NodeId 属性正确
-        // 解析器（机制层）不校验"0x2A 是否在路由表"——那是上位机策略层（T3.4 第⑤步）的职责
+        // 解析器不校验"0x2A 是否在路由表"，该职责属于上位机路由层
         // ═══════════════════════════════════════════════════════════
         [Fact]
         public void Feed_FrameWithNodeId2A_ExtractsNodeIdCorrectly()

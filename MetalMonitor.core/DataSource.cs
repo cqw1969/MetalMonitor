@@ -1,7 +1,7 @@
 namespace MetalMonitor.Core
 {
     /// <summary>
-    /// 数据来源枚举：DeviceService 内部逻辑的唯一数据源标识（D1 技术债偿还，T3.4 第③步）。
+    /// 数据来源枚举：DeviceService 内部逻辑的唯一数据源标识。
     /// 边界约定：config.json 持久化值与 UI 下拉框均为显示名（中文），
     /// 由 <see cref="DataSourceExtensions"/> 在字符串 ↔ 枚举间双向映射——
     /// 显示名全项目只在映射表出现一次，新增数据源只需：加枚举成员 + 两行映射 + 一个 case。
@@ -12,7 +12,7 @@ namespace MetalMonitor.Core
         Simulation,
         /// <summary>MQTT：Broker 订阅推送（可选能力，需 IMqttService 注入）。</summary>
         Mqtt,
-        /// <summary>串口：FrameParser 解析帧（T3.4 预留，第⑤步接线激活）。</summary>
+        /// <summary>串口：原始字节经 FrameParser 解析为协议帧。</summary>
         Serial
     }
 
@@ -98,7 +98,7 @@ namespace MetalMonitor.Core
         NoValidFrame,
         /// <summary>无信号：看门狗周期内连一个字节都没收到（线断/对端断电/无输出）。</summary>
         NoSignal,
-        /// <summary>重连中：已断开，后台按指数退避重试（D-13/STEP-11）。</summary>
+        /// <summary>重连中：已断开，后台按指数退避重试。</summary>
         Reconnecting
     }
 

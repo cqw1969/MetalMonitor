@@ -11,7 +11,7 @@ using Xunit;
 namespace MetalMonitor.Tests
 {
     /// <summary>
-    /// T4.1 指标质量码单元测试。
+    /// 指标质量码单元测试。
     ///
     /// 覆盖：
     ///   1. 写值瞬间置 Good（零延迟），同值质量跃迁不重复通知

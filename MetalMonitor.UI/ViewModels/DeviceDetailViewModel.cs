@@ -243,7 +243,7 @@ namespace MetalMonitor.UI.ViewModels
             }
 
             // 增量同步不再清空集合，ComboBox 选中态不会被打断；这里仍重发一次通知，
-            // 用于首次填充（集合原为空）与上面回退场景把选中项落到控件上（STEP-17）
+            // 用于首次填充（集合原为空）与回退场景，将选中项应用到控件
             OnPropertyChanged(nameof(SelectedMetricName));
             OnPropertyChanged(nameof(MetricDisplayName));
             OnPropertyChanged(nameof(CurrentMetricUnit));
@@ -252,7 +252,7 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         /// <summary>
-        /// 增量同步可选指标集合（STEP-17 方案 B）：不清空集合，只移除消失/停用项、更新同名项、补入新增项。
+        /// 增量同步可选指标集合：不清空集合，只移除消失/停用项、更新同名项、补入新增项。
         /// </summary>
         /// <param name="configs">数据库返回的最新全部指标配置（含停用项）。</param>
         /// <remarks>

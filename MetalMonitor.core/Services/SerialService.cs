@@ -6,7 +6,7 @@ namespace MetalMonitor.Core
     /// <summary>
     /// 串口数据源。按 PROTOCOL.md v0.9 配置：115200 波特率、8 数据位、1 停止位、无校验。
     /// 注意：DataReceived/ConnectionStateChanged 事件由 SerialPort 内部后台线程触发（非 UI 线程）。
-    /// 本服务仅负责收原始字节，不做帧解析（帧组装与 CRC 校验由 T3.3 FrameParser 负责）。
+    /// 本服务仅负责接收原始字节，不进行帧解析；帧组装与 CRC 校验由 FrameParser 负责。
     /// </summary>
     public class SerialService : ISerialService, IDisposable
     {
@@ -19,7 +19,7 @@ namespace MetalMonitor.Core
         public bool IsConnected => _serialPort?.IsOpen ?? false;
 
         // 能力维度：每次访问实时查询注册表端口名单（本机实测约 26 微秒/次），
-        // USB 串口热插拔后无需重启进程即可反映真实状态（D-3 方案 A：动态计算）
+        // 每次访问实时查询，USB 串口热插拔后无需重启进程即可反映真实状态
         /// <summary>当前系统是否存在串口硬件（动态查询，热插拔即时反映）。</summary>
         public bool IsAvailable => SerialPort.GetPortNames().Length > 0;
 
@@ -120,7 +120,7 @@ namespace MetalMonitor.Core
         /// </summary>
         /// <param name="sender">事件发送者（SerialPort 实例）。</param>
         /// <param name="e">SerialPort 数据事件参数。</param>
-        /// <remarks>运行在 SerialPort 内部后台线程；本方法不做任何帧解析，组装与校验由 T3.3 FrameParser 负责。</remarks>
+        /// <remarks>运行在 SerialPort 内部后台线程；本方法不进行帧解析，组装与校验由 FrameParser 负责。</remarks>
         private void OnSerialDataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             try

@@ -78,7 +78,7 @@ namespace MetalMonitor.Core
             }
         }
 
-        // ===== 串口接入配置段（T3.4 第④步，2026-10-14 决策）=====
+        // ===== 串口接入配置段 =====
         /// <summary>
         /// 上次成功使用的串口名（如 "COM3"），跨启动持久化，作为下次连接的默认候选；
         /// 空字符串表示尚未持久化，由调用方回退（首可用口/用户手选）。
@@ -95,13 +95,13 @@ namespace MetalMonitor.Core
             }
         }
 
-        // ===== 端口漂移候选（D-18，STEP-19）=====
+        // ===== 端口漂移候选 =====
         /// <summary>最近成功连接过的串口名（最多 5 个，最近成功排最前）；只读快照，写入走 <see cref="RecordSerialPortSuccess"/>。</summary>
         public IReadOnlyList<string> SerialKnownPorts =>
             _config.Serial?.KnownPorts is { Count: > 0 } known ? known.ToArray() : Array.Empty<string>();
 
         /// <summary>
-        /// 记录一次"验证通过"的连接（D-18）：端口名置顶到候选列表、去重、截断到 5 个，同时更新 PortName 并立即落盘。
+        /// 记录一次验证通过的连接：端口名置顶到候选列表、去重、截断到 5 个，同时更新 PortName 并立即落盘。
         /// </summary>
         /// <param name="portName">已验证可用的串口名；空值直接忽略。</param>
         public void RecordSerialPortSuccess(string portName)

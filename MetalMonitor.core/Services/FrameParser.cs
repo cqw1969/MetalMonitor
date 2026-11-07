@@ -9,9 +9,9 @@ namespace MetalMonitor.Core
     /// 设计决策
     /// - 缓冲区：128 字节环形缓冲区（byte[128] + long 计数器，无空/满歧义）
     /// - 状态机：枚举 + switch（WaitingHead→WaitingHead2→ReadingNodeId→ReadingLen→ReadingBody→ReadingCrc）
-    /// - 事件载荷：解析后的 SensorDataFrame 对象（FrameParser 是"翻译官"，不是"搬运工"）
+    /// - 事件载荷：解析后的 SensorDataFrame 对象
     /// - 坏帧处理：跳过帧头 1 字节，重新找 AA 55（最鲁棒，能从任意乱码中恢复）
-    /// 协议参考：PROTOCOL.md v0.9 修订2，CMD 0x01 帧 12 字节（总长 = LEN + 6），CRC16/MODBUS。
+    /// 协议参考：docs/protocol/PROTOCOL.md v0.9 修订2，CMD 0x01 帧 12 字节（总长 = LEN + 6），CRC16/MODBUS。
     /// </remarks>
     public class FrameParser
     {
@@ -220,7 +220,7 @@ namespace MetalMonitor.Core
                     var frame = new SensorDataFrame(nodeId, temperature, voltageMv, ds18B20Online);
                     FrameParsed?.Invoke(this, frame);
                 }
-                // 其他 CMD 暂不处理（未来扩展）
+                // 其他 CMD 不属于传感器数据帧，此处不解析
             }
             else
             {

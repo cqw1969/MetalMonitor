@@ -4,7 +4,7 @@ using Xunit;
 namespace MetalMonitor.Tests
 {
     /// <summary>
-    /// 有界可观察集合单测（STEP-4，D-6）：锁定"超容量丢最旧"与"先裁后插"两条语义。
+    /// 有界可观察集合单测：锁定"超容量丢最旧"与"先裁后插"两条语义。
     /// </summary>
     public class BoundedObservableCollectionTests
     {

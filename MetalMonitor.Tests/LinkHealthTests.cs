@@ -10,7 +10,7 @@ using Xunit;
 namespace MetalMonitor.Tests
 {
     /// <summary>
-    /// T4.1 链路健康单元测试。
+    /// 链路健康单元测试。
     ///
     /// 覆盖：
     ///   1. 纯函数五态判定（假时间，不 sleep）：Inactive/Recovering/Healthy/NoValidFrame/NoSignal
@@ -163,7 +163,7 @@ namespace MetalMonitor.Tests
         }
 
         // ═══════════════════════════════════════════════════════════
-        // Reconnecting 第六态（STEP-11 / D-13）
+        // Reconnecting 第六态
         // ═══════════════════════════════════════════════════════════
         [Theory]
         // 断开且重连循环在跑 → Reconnecting
@@ -180,13 +180,15 @@ namespace MetalMonitor.Tests
         }
 
         // ═══════════════════════════════════════════════════════════
-        // 窗口丙：启动从未连上 + 小本子非空 + 设备插在没记过的口（STEP-22）
+        // 启动后从未连上 + 记忆端口列表非空 + 设备插在未记录端口
         // ═══════════════════════════════════════════════════════════
         /// <summary>
-        /// 复现修复前的卡死场景：
-        ///   · LinkHealth 仍是 Inactive（本次启动从未连上）→ 理由一不成立
-        ///   · 小本子记着 COM3，但当前在场的只有 COM5 → SerialPortAppeared 返回 false → 理由二原本也不成立
-        /// 修复后理由二放宽为"有任意串口在场"，应能派出重连循环（可观察信号：顶栏收到"检测到串口设备接入"）。
+        /// 验证该组合场景下重连循环能够启动。
+        ///
+        /// 场景条件：
+        ///   · LinkHealth 为 Inactive（本次启动从未连上），不满足理由一；
+        ///   · 记忆端口列表仅含 COM3，当前在场端口为 COM5，SerialPortAppeared 返回 false，不满足原理由二。
+        /// 判据放宽后应启动重连循环，可观察信号为 DataSourceStateChanged 携带"检测到串口设备接入"。
         /// </summary>
         [Fact]
         public async Task Reconnect_StartsWhenRememberedPortsAbsentButAnotherPortPresent()
@@ -199,7 +201,7 @@ namespace MetalMonitor.Tests
             serial.Setup(x => x.DisconnectAsync()).Returns(Task.CompletedTask);
 
             var config = new ConfigService(Path.Combine(_tempDir, "config-window-c.json")) { DataSource = "串口" };
-            config.RecordSerialPortSuccess("COM3");   // 小本子非空，但 COM3 现在不在场
+            config.RecordSerialPortSuccess("COM3");   // 记忆端口为 COM3，当前不在场
 
             var svc = CreateService(serial, config);
             var states = new List<DataSourceStateChangedEventArgs>();

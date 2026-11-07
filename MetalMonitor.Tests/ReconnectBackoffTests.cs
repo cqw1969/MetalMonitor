@@ -5,7 +5,7 @@ using Xunit;
 namespace MetalMonitor.Tests
 {
     /// <summary>
-    /// STEP-11 / D-13：指数退避 + 抖动纯函数测试。
+    /// 指数退避与抖动的纯函数测试。
     /// </summary>
     /// <remarks>
     /// 所有测试用单一 Random 种子（0），保证抖动结果可复现、不引入随机性脆弱性。
