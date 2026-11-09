@@ -17,17 +17,21 @@ namespace MetalMonitor.Core
     }
 
     /// <summary>
-    /// 数据源运行状态（三态）：回答"为什么没数据"——正常 / 有硬件但连接失败 / 系统根本没有这个能力。
+    /// 数据源运行状态（五态）：回答"为什么没数据"——正常 / 确定性失败 / 系统根本没有这个能力 / 模拟运行 / 正在寻找设备。
     /// 与 <see cref="DataSource"/>（用户选了什么）正交：用户选择永不被故障改写，状态单独表达运行结果。
     /// </summary>
     public enum DataSourceState
     {
-        /// <summary>正常：所选数据源已就绪并在工作（模拟数据始终为正常）。</summary>
+        /// <summary>正常：所选数据源已就绪并在工作。</summary>
         Online,
-        /// <summary>故障：能力存在但本次连接失败（如端口被占用、Broker 拒绝），可重试。</summary>
+        /// <summary>故障：能力存在但本次连接确定失败（如端口被占用、不存在），重试也不会成功。</summary>
         Faulted,
         /// <summary>不可用：当前系统缺少该能力（如没有任何串口、服务未注册），重试也不会成功。</summary>
-        Unavailable
+        Unavailable,
+        /// <summary>模拟运行：当前使用模拟数据源，无真实硬件接入。</summary>
+        Simulated,
+        /// <summary>寻找设备中：系统有串口硬件，正在遍历候选端口验证哪个是目标设备。</summary>
+        Searching
     }
 
     /// <summary>数据源状态变更事件参数：携带新状态与面向用户的原因说明。</summary>
@@ -82,7 +86,7 @@ namespace MetalMonitor.Core
     }
 
     /// <summary>
-    /// 串口链路健康（五态）：回答"这条串口通道现在还能不能送来可信数据"。
+    /// 串口链路健康（七态）：回答"这条串口通道现在还能不能送来可信数据"。
     /// 与 <see cref="DataSourceState"/>（连接结果）正交——连接成功不代表链路在送数据，
     /// 连接成功后的静默要靠时间戳判据才能发现。
     /// </summary>
@@ -90,7 +94,9 @@ namespace MetalMonitor.Core
     {
         /// <summary>未连接：未选串口 / 已断开 / 连接失败。</summary>
         Inactive,
-        /// <summary>等待首帧：已连接，但一个看门狗周期内尚未收到任何字节。</summary>
+        /// <summary>已打开端口，等待验证：正在等首帧确认是不是目标设备。</summary>
+        Handshaking,
+        /// <summary>已确认设备，等待数据稳定：一个看门狗周期内尚未收到任何字节。</summary>
         Recovering,
         /// <summary>健康：看门狗周期内收到过通过 CRC 校验的有效帧。</summary>
         Healthy,
@@ -148,7 +154,7 @@ namespace MetalMonitor.Core
         /// <param name="lastByteMs">最近一次收到任意字节的时刻；0 表示本次连接后从未收到。</param>
         /// <param name="lastValidFrameMs">最近一次收到有效帧（CRC 通过）的时刻；0 表示从未收到。</param>
         /// <param name="watchdogSeconds">看门狗周期（秒），非正值按 1 处理。</param>
-        /// <param name="reconnecting">重连循环是否正在跑（断口时决定 Inactive 还是 Reconnecting）。</param>
+        /// <param name="reconnecting">重连循环是否正在运行（断开时决定 Inactive 还是 Reconnecting）。</param>
         internal static LinkHealth Evaluate(long nowMs, long connectedAtMs, long lastByteMs, long lastValidFrameMs, int watchdogSeconds, bool reconnecting = false)
         {
             if (connectedAtMs <= 0) return reconnecting ? LinkHealth.Reconnecting : LinkHealth.Inactive;
@@ -165,7 +171,7 @@ namespace MetalMonitor.Core
 
             // 刚连上、还没见到第一个字节，且仍在等待窗口内
             if (lastByteMs == 0 && nowMs - connectedAtMs <= watchdogMs)
-                return LinkHealth.Recovering;
+                return LinkHealth.Handshaking;
 
             // 连上了，但窗口内既无字节也无有效帧（字节可能久远到这之前）
             return LinkHealth.NoSignal;

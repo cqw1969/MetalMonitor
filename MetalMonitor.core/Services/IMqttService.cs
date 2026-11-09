@@ -1,5 +1,3 @@
-using System.Threading.Tasks;
-
 namespace MetalMonitor.Core
 {
     /// <summary>

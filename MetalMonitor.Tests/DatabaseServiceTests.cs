@@ -1,7 +1,4 @@
 using MetalMonitor.Core;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 using Xunit;
 
 namespace MetalMonitor.Tests
@@ -76,7 +73,7 @@ namespace MetalMonitor.Tests
 
             await _db.AddDataRecordsBatchAsync(records);
 
-            var all = await _db.GetDataRecordsAsync();
+            var all = await _db.GetDataRecordsByTimeRangeAsync(System.DateTime.Now.AddDays(-1), System.DateTime.Now.AddDays(1));
             Assert.Equal(5, all.Count);
             Assert.Contains(all, r => r.Value == 65.0);
         }
@@ -88,11 +85,11 @@ namespace MetalMonitor.Tests
 
             await _db.AddDataRecordsBatchAsync(new System.Collections.Generic.List<DataRecord>());
 
-            Assert.Empty(await _db.GetDataRecordsAsync());
+            Assert.Empty(await _db.GetDataRecordsByTimeRangeAsync(System.DateTime.Now.AddDays(-1), System.DateTime.Now.AddDays(1)));
         }
 
         [Fact]
-        public async Task GetDataRecordsAsync_FiltersByDeviceAndMetric()
+        public async Task GetDataRecordsByTimeRangeAsync_FiltersByDeviceAndMetric()
         {
             await _db.InitializeAsync();
             await _db.AddDataRecordsBatchAsync(new()
@@ -102,11 +99,14 @@ namespace MetalMonitor.Tests
                 Record("d2", "2号CNC", "Temperature", 75)
             });
 
-            var d1Only = await _db.GetDataRecordsAsync(deviceId: "d1");
+            var start = System.DateTime.Now.AddDays(-1);
+            var end = System.DateTime.Now.AddDays(1);
+
+            var d1Only = await _db.GetDataRecordsByTimeRangeAsync(start, end, deviceId: "d1");
             Assert.Equal(2, d1Only.Count);
             Assert.All(d1Only, r => Assert.Equal("d1", r.DeviceId));
 
-            var pressureOnly = await _db.GetDataRecordsAsync(metricName: "Pressure");
+            var pressureOnly = await _db.GetDataRecordsByTimeRangeAsync(start, end, metricName: "Pressure");
             Assert.Single(pressureOnly);
             Assert.Equal(8, pressureOnly[0].Value);
         }
@@ -188,7 +188,7 @@ namespace MetalMonitor.Tests
 
             await _db.CheckpointAsync();
 
-            Assert.Equal(10, (await _db.GetDataRecordsAsync()).Count);
+            Assert.Equal(10, (await _db.GetDataRecordsByTimeRangeAsync(System.DateTime.Now.AddDays(-1), System.DateTime.Now.AddDays(1))).Count);
         }
     }
 }

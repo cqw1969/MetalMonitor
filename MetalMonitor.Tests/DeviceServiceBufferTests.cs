@@ -1,10 +1,7 @@
 using MetalMonitor.core.Services;
 using MetalMonitor.Core;
 using Moq;
-using System.IO;
-using System.Linq;
 using System.Text.Json;
-using System.Threading.Tasks;
 using Xunit;
 
 namespace MetalMonitor.Tests

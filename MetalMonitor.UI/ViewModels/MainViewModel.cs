@@ -2,9 +2,7 @@ using MetalMonitor.Core;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Threading;
 using System.Timers;
 using System.Windows;
 
@@ -28,6 +26,8 @@ namespace MetalMonitor.UI.ViewModels
         private readonly IAlarmService _alarmService;
         /// <summary>数据库服务，提供数据库路径查询与更改等能力。</summary>
         private readonly IDatabaseService _databaseService;
+        /// <summary>配置服务（DI 单例），提供心跳间隔等运行参数。</summary>
+        private readonly ConfigService _configService;
         /// <summary>定时器回调防重入标记：0 空闲、1 正在更新，通过 <see cref="Interlocked"/> 原子操作访问。</summary>
         private int _isUpdating = 0;
 
@@ -97,6 +97,8 @@ namespace MetalMonitor.UI.ViewModels
         {
             DataSourceState.Online => "正常",
             DataSourceState.Faulted => "连接失败",
+            DataSourceState.Simulated => "模拟运行",
+            DataSourceState.Searching => "寻找设备中",
             _ => "不可用"
         };
 
@@ -104,7 +106,8 @@ namespace MetalMonitor.UI.ViewModels
         private static string ToLinkHealthText(LinkHealth health) => health switch
         {
             LinkHealth.Healthy => "健康",
-            LinkHealth.Recovering => "等待首帧",
+            LinkHealth.Handshaking => "等待验证",
+            LinkHealth.Recovering => "等待数据",
             LinkHealth.Reconnecting => "重连中",
             LinkHealth.NoValidFrame => "有字节无有效帧",
             LinkHealth.NoSignal => "无信号",
@@ -141,15 +144,17 @@ namespace MetalMonitor.UI.ViewModels
         /// <param name="deviceService">设备数据服务。</param>
         /// <param name="alarmService">报警服务。</param>
         /// <param name="databaseService">数据库服务。</param>
+        /// <param name="configService">配置服务（DI 单例），提供心跳间隔等运行参数。</param>
         /// <remarks>
         /// 构造时订阅 <see cref="IAlarmService.AlarmStateChanged"/>（在 <see cref="Dispose(bool)"/> 中退订）；
         /// 定时器 <see cref="System.Timers.Timer.Elapsed"/> 在线程池线程触发，回调内部自行做防重入与 UI 线程封送。
         /// </remarks>
-        public MainViewModel(IDeviceService deviceService, IAlarmService alarmService, IDatabaseService databaseService)
+        public MainViewModel(IDeviceService deviceService, IAlarmService alarmService, IDatabaseService databaseService, ConfigService configService)
         {
             _deviceService = deviceService;
             _alarmService = alarmService;
             _databaseService = databaseService;
+            _configService = configService;
             _selectedDataSource = _deviceService.DataSource;
 
             _alarmService.AlarmStateChanged += OnAlarmStateChanged;
@@ -158,10 +163,11 @@ namespace MetalMonitor.UI.ViewModels
             // 链路健康变更（跃迁才广播）：驱动顶栏"链路"状态行
             _deviceService.LinkHealthChanged += OnLinkHealthChanged;
 
-            //Devices = new ObservableCollection<Device>();
             DeviceCardViewModels = new ObservableCollection<DeviceCardViewModel>();
 
-            _dataTimer = new System.Timers.Timer(1000);
+            // 心跳间隔取配置值；配置非法（<=0）时回退 1000ms，避免 Timer.Interval 抛 ArgumentException
+            int refreshInterval = _configService.RefreshInterval > 0 ? _configService.RefreshInterval : 1000;
+            _dataTimer = new System.Timers.Timer(refreshInterval);
             _dataTimer.Elapsed += OnTimerElapsed;
             _dataTimer.AutoReset = true;
             _dataTimer.Start();

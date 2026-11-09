@@ -41,21 +41,6 @@ namespace MetalMonitor.Core
         Task UpdateDevicesAsync();
 
         /// <summary>
-        /// 判断指标当前值是否应报警（无状态只读判定）。
-        /// </summary>
-        /// <param name="metricName">指标名</param>
-        /// <param name="value">待判定的当前值</param>
-        /// <returns>true=越限应报警；false=正常或该指标未启用报警</returns>
-        bool ShouldAlarm(string metricName, double value);
-
-        /// <summary>
-        /// 获取指标的报警阈值。
-        /// </summary>
-        /// <param name="metricName">指标名</param>
-        /// <returns>阈值；指标不存在时返回实现约定的默认值</returns>
-        double GetAlarmThreshold(string metricName);
-
-        /// <summary>
         /// 切换数据源；切换前强制冲刷缓冲，连接失败时回退模拟数据。
         /// </summary>
         /// <param name="source">数据源名（须为 <see cref="AvailableDataSources"/> 之一）</param>

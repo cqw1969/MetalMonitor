@@ -1,6 +1,3 @@
-using System.Collections.Generic;
-using System.Threading.Tasks;
-
 namespace MetalMonitor.Core
 {
     /// <summary>
@@ -41,14 +38,6 @@ namespace MetalMonitor.Core
         Task AddDataRecordsBatchAsync(List<DataRecord> records);
 
         /// <summary>
-        /// 按设备/指标筛选全部历史记录（数据量大时优先用时间范围版本）。
-        /// </summary>
-        /// <param name="deviceId">可选设备 Guid 过滤；null=不限设备</param>
-        /// <param name="metricName">可选指标名过滤；null=不限指标</param>
-        /// <returns>按时间升序排列的记录列表</returns>
-        Task<List<DataRecord>> GetDataRecordsAsync(string? deviceId = null, string? metricName = null);
-
-        /// <summary>
         /// 按时间范围并可选设备/指标筛选历史记录。
         /// </summary>
         /// <param name="startTime">起始时间（含）</param>
@@ -57,17 +46,6 @@ namespace MetalMonitor.Core
         /// <param name="metricName">可选指标名过滤；null=不限</param>
         /// <returns>按时间升序排列的记录列表</returns>
         Task<List<DataRecord>> GetDataRecordsByTimeRangeAsync(DateTime startTime, DateTime endTime, string? deviceId = null, string? metricName = null);
-
-        /// <summary>获取历史记录中出现过的全部设备 Guid（历史查询下拉框用）</summary>
-        /// <returns>去重后的设备 Guid 列表</returns>
-        Task<List<string>> GetDeviceIdsAsync();
-
-        /// <summary>
-        /// 获取指定设备（或全部）历史记录中出现过的指标名。
-        /// </summary>
-        /// <param name="deviceId">可选设备 Guid；null=全部设备</param>
-        /// <returns>去重后的指标名列表</returns>
-        Task<List<string>> GetMetricNamesAsync(string? deviceId = null);
 
         // ===== 设备管理 CRUD =====
 

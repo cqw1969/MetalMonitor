@@ -1,5 +1,3 @@
-using System;
-
 namespace MetalMonitor.Core
 {
     /// <summary>
@@ -265,10 +263,10 @@ namespace MetalMonitor.Core
     /// <summary>
     /// 传感器数据帧：FrameParser 解析后的结构化结果。
     /// </summary>
-    /// <remarks>对应 PROTOCOL.md v0.9 CMD 0x01 上行数据帧的字段。</remarks>
+    /// <remarks>对应 docs/protocol/PROTOCOL.md v0.9 CMD 0x01 上行数据帧的字段。</remarks>
     public sealed class SensorDataFrame : EventArgs
     {
-        ///<summary> 节点 ID：0x00=单节点/未分配（当前在用值），0x01~0xFE=多节点地址，0xFF=保留（见 PROTOCOL.md §2.1）。</summary>
+        /// <summary>节点 ID：0x00=单节点/未分配（当前在用值），0x01~0xFE=多节点地址，0xFF=保留（见 docs/protocol/PROTOCOL.md §2.1）。</summary>
         public byte NodeId { get; }
         /// <summary>温度（℃，已除10还原为浮点）。</summary>
         public double Temperature { get; }
@@ -284,7 +282,7 @@ namespace MetalMonitor.Core
         /// <param name="temperature">温度（℃）。</param>
         /// <param name="voltageMv">电压（mV）。</param>
         /// <param name="ds18B20Online">DS18B20 在线状态。</param>
-        public SensorDataFrame(byte nodeId,double temperature, ushort voltageMv, bool ds18B20Online)
+        public SensorDataFrame(byte nodeId, double temperature, ushort voltageMv, bool ds18B20Online)
         {
             NodeId = nodeId;
             Temperature = temperature;

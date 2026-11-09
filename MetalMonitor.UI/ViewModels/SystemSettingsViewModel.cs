@@ -20,7 +20,6 @@ namespace MetalMonitor.UI.ViewModels
         public ObservableCollection<MetricConfig> MetricConfigs { get; set; } = new();
 
         /// <summary>获取报警方向可选项（高于阈值报警/低于阈值报警），绑定方向下拉框。</summary>
-        // 报警方向选项
         public AlarmDirection[] AlarmDirectionOptions { get; } = new AlarmDirection[]
         {
             AlarmDirection.Above,
@@ -69,11 +68,9 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         /// <summary>获取是否已选中已存在的指标（控制修改/删除按钮可用性）。</summary>
-        // 是否已选中已存在的指标（控制修改/删除按钮可用性）
         public bool HasSelectedConfig => _selectedMetricConfig != null;
 
         /// <summary>编辑表单-指标名称 backing field。</summary>
-        // 编辑表单字段
         private string _editName = string.Empty;
         /// <summary>获取或设置编辑表单中的指标名称（唯一标识，不区分大小写查重）。</summary>
         public string EditName

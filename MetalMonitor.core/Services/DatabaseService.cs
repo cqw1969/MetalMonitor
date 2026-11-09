@@ -1,7 +1,4 @@
 using Microsoft.Data.Sqlite;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
 
 namespace MetalMonitor.Core
 {
@@ -332,58 +329,6 @@ namespace MetalMonitor.Core
         }
 
         /// <summary>
-        /// 按可选条件查询数据记录，按时间戳倒序返回。
-        /// </summary>
-        /// <param name="deviceId">可选设备 Id 过滤；为 null 或空时不按设备过滤。</param>
-        /// <param name="metricName">可选指标名过滤；为 null 或空时不按指标过滤。</param>
-        /// <returns>命中的数据记录列表（最新在前）；无命中时返回空列表。</returns>
-        /// <remarks>查询条件以参数化 SQL 拼接，避免字符串拼接注入与计划失效。</remarks>
-        public async Task<List<DataRecord>> GetDataRecordsAsync(string? deviceId = null, string? metricName = null)
-        {
-            var records = new List<DataRecord>();
-
-            using var connection = new SqliteConnection($"Data Source={_databasePath}");
-            await connection.OpenAsync().ConfigureAwait(false);
-
-            var selectSql = "SELECT Id, DeviceId, DeviceName, MetricName, Value, Unit, Timestamp FROM DataRecords WHERE 1=1";
-            var parameters = new List<SqliteParameter>();
-
-            if (!string.IsNullOrEmpty(deviceId))
-            {
-                selectSql += " AND DeviceId = @DeviceId";
-                parameters.Add(new SqliteParameter("@DeviceId", deviceId));
-            }
-
-            if (!string.IsNullOrEmpty(metricName))
-            {
-                selectSql += " AND MetricName = @MetricName";
-                parameters.Add(new SqliteParameter("@MetricName", metricName));
-            }
-
-            selectSql += " ORDER BY Timestamp DESC";
-
-            using var command = new SqliteCommand(selectSql, connection);
-            command.Parameters.AddRange(parameters.ToArray());
-
-            using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
-            while (await reader.ReadAsync().ConfigureAwait(false))
-            {
-                records.Add(new DataRecord
-                {
-                    Id = reader.GetInt32(0),
-                    DeviceId = reader.GetString(1),
-                    DeviceName = reader.GetString(2),
-                    MetricName = reader.GetString(3),
-                    Value = reader.GetDouble(4),
-                    Unit = reader.IsDBNull(5) ? null : reader.GetString(5),
-                    Timestamp = DateTime.Parse(reader.GetString(6))
-                });
-            }
-
-            return records;
-        }
-
-        /// <summary>
         /// 查询指定时间范围内（含端点）的数据记录，支持可选设备/指标过滤，按时间戳正序返回。
         /// </summary>
         /// <param name="startTime">起始时间（含）。</param>
@@ -442,66 +387,6 @@ namespace MetalMonitor.Core
             }
 
             return records;
-        }
-
-        /// <summary>
-        /// 查询数据记录表中出现过的全部去重设备 Id。
-        /// </summary>
-        /// <returns>设备 Id 字符串列表；无记录时返回空列表。</returns>
-        public async Task<List<string>> GetDeviceIdsAsync()
-        {
-            var deviceIds = new List<string>();
-
-            using var connection = new SqliteConnection($"Data Source={_databasePath}");
-            await connection.OpenAsync().ConfigureAwait(false);
-
-            var selectSql = "SELECT DISTINCT DeviceId FROM DataRecords";
-
-            using var command = new SqliteCommand(selectSql, connection);
-            using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
-            while (await reader.ReadAsync().ConfigureAwait(false))
-            {
-                deviceIds.Add(reader.GetString(0));
-            }
-
-            return deviceIds;
-        }
-
-        /// <summary>
-        /// 查询数据记录表中出现过的全部去重指标名，可限定到某台设备。
-        /// </summary>
-        /// <param name="deviceId">可选设备 Id 过滤；为 null 或空时查询全部设备的指标。</param>
-        /// <returns>指标名称列表；无记录时返回空列表。</returns>
-        public async Task<List<string>> GetMetricNamesAsync(string? deviceId = null)
-        {
-            var metricNames = new List<string>();
-
-            using var connection = new SqliteConnection($"Data Source={_databasePath}");
-            await connection.OpenAsync().ConfigureAwait(false);
-
-            string selectSql;
-            if (!string.IsNullOrEmpty(deviceId))
-            {
-                selectSql = "SELECT DISTINCT MetricName FROM DataRecords WHERE DeviceId = @DeviceId";
-            }
-            else
-            {
-                selectSql = "SELECT DISTINCT MetricName FROM DataRecords";
-            }
-
-            using var command = new SqliteCommand(selectSql, connection);
-            if (!string.IsNullOrEmpty(deviceId))
-            {
-                command.Parameters.AddWithValue("@DeviceId", deviceId);
-            }
-
-            using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
-            while (await reader.ReadAsync().ConfigureAwait(false))
-            {
-                metricNames.Add(reader.GetString(0));
-            }
-
-            return metricNames;
         }
 
         // ===== 设备管理CRUD =====

@@ -1,10 +1,6 @@
 using MetalMonitor.core.Services;
 using MetalMonitor.Core;
 using Moq;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Threading.Tasks;
 using Xunit;
 
 namespace MetalMonitor.Tests
@@ -17,6 +13,7 @@ namespace MetalMonitor.Tests
     ///   2. DeviceService 事件接线：连接 → Recovering、无字节超期 → NoSignal、
     ///      收到有效帧 → Healthy、断开 → Inactive
     ///   3. 跃迁去重：同一状态重复评估不重复广播（避免每秒心跳造成事件风暴）
+    ///   4. Reconnecting 第六态：断开且重连循环运行时返回 Reconnecting
     ///
     /// 时间约定：评估器与 EvaluateLinkHealthAt 均接收单调毫秒（Environment.TickCount64），
     /// 因此测试可以直接喂"未来时间"，无需真实等待看门狗周期。
@@ -25,7 +22,7 @@ namespace MetalMonitor.Tests
     {
         private readonly string _tempDir;
 
-        /// <summary>PROTOCOL.md v0.9 标准示例帧（NODE_ID=0x00，12 字节，CRC 正确）。</summary>
+        /// <summary>docs/protocol/PROTOCOL.md v0.9 标准示例帧（NODE_ID=0x00，12 字节，CRC 正确）。</summary>
         private static readonly byte[] ValidFrame =
         {
             0xAA, 0x55, 0x00, 0x06, 0x01, 0xFD, 0x00, 0xE2, 0x0C, 0x01, 0x2E, 0xF8
@@ -66,10 +63,10 @@ namespace MetalMonitor.Tests
         [Theory]
         // 未连接（connectedAt=0）→ Inactive
         [InlineData(10000, 0, 5000, 5000, LinkHealth.Inactive)]
-        // 刚连上 1 秒、还没收到字节 → Recovering
-        [InlineData(2000, 1000, 0, 0, LinkHealth.Recovering)]
+        // 刚连上 1 秒、还没收到字节 → Handshaking
+        [InlineData(2000, 1000, 0, 0, LinkHealth.Handshaking)]
         // 边界：恰好等于看门狗周期（3 秒）仍属等待窗口
-        [InlineData(4000, 1000, 0, 0, LinkHealth.Recovering)]
+        [InlineData(4000, 1000, 0, 0, LinkHealth.Handshaking)]
         // 超过看门狗周期仍无字节 → NoSignal
         [InlineData(4001, 1000, 0, 0, LinkHealth.NoSignal)]
         // 有字节但从未见过有效帧 → NoValidFrame
@@ -91,7 +88,7 @@ namespace MetalMonitor.Tests
         // DeviceService 事件接线
         // ═══════════════════════════════════════════════════════════
         [Fact]
-        public void ConnectionEstablished_TransitionsToRecovering_AndBroadcastsOnce()
+        public void ConnectionEstablished_TransitionsToHandshaking_AndBroadcastsOnce()
         {
             var serial = new Mock<ISerialService>();
             var svc = CreateService(serial);
@@ -100,9 +97,9 @@ namespace MetalMonitor.Tests
 
             serial.Raise(x => x.ConnectionStateChanged += null, new object(), true);
 
-            Assert.Equal(LinkHealth.Recovering, svc.LinkHealth);
+            Assert.Equal(LinkHealth.Handshaking, svc.LinkHealth);
             Assert.Single(changes);
-            Assert.Equal(LinkHealth.Recovering, changes[0].Health);
+            Assert.Equal(LinkHealth.Handshaking, changes[0].Health);
 
             // 同一状态重复评估不得重复广播
             svc.EvaluateLinkHealthAt(Environment.TickCount64 + 100);
@@ -216,9 +213,8 @@ namespace MetalMonitor.Tests
                 svc.Dispose();                    // 叫停后台重连循环，避免测试泄漏
             }
 
-            Assert.Contains(states, e => e.State == DataSourceState.Faulted
-                                          && e.Reason != null
-                                          && e.Reason.Contains("检测到串口设备接入"));
+            Assert.Contains(states, e => e.State == DataSourceState.Searching);
+            Assert.Equal(LinkHealth.Inactive, svc.LinkHealth);   // 尚未打开端口，由后台重连循环后续更新
         }
     }
 }

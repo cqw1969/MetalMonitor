@@ -1,5 +1,3 @@
-using System.Threading.Tasks;
-
 namespace MetalMonitor.Core
 {
     /// <summary>
@@ -13,7 +11,7 @@ namespace MetalMonitor.Core
         string[] GetAvailablePorts();
 
         /// <summary>
-        /// 打开指定串口（按 PROTOCOL.md v0.9 配置 115200 8N1）。
+        /// 打开指定串口（按 docs/protocol/PROTOCOL.md v0.9 配置 115200 8N1）。
         /// </summary>
         /// <param name="portName">串口名称，如 "COM3"。</param>
         Task ConnectAsync(string portName);

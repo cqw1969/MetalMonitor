@@ -2,11 +2,12 @@
   "DatabasePath": "D:\\Data",
   "BatchSize": 50,
   "RefreshInterval": 1000,
-  "DataSource": "MQTT",
+  "DataSource": "\u4E32\u53E3",
   "Serial": {
     "PortName": "COM5",
     "KnownPorts": [
-      "COM5"
+      "COM5",
+      "COM6"
     ],
     "NodeRouting": {},
     "WatchdogSeconds": 3,

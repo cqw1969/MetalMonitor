@@ -6,7 +6,6 @@ using MetalMonitor.Core;
 using SkiaSharp;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 
@@ -104,7 +103,6 @@ namespace MetalMonitor.UI.ViewModels
         private ObservableCollection<ObservablePoint> _chartPoints = new();
 
         /// <summary>头部实时值显示文本 backing field，初始“--”。</summary>
-        // 头部实时值显示
         private string _currentValueText = "--";
         /// <summary>
         /// 获取当前指标的头部实时值显示文本；仅类内部可写。

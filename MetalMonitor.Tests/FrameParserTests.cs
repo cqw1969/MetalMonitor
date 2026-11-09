@@ -1,5 +1,4 @@
 using MetalMonitor.Core;
-using System.Collections.Generic;
 using Xunit;
 
 namespace MetalMonitor.Tests
@@ -19,16 +18,16 @@ namespace MetalMonitor.Tests
     ///   9. LEN 字节恰为 0xAA（真帧头第一字节）：回退后真帧正常解析
     ///  10. 超大 LEN 后跟大量垃圾字节，不得抛 IndexOutOfRangeException
     ///  11. NODE_ID 提取：NODE_ID=0x2A 的帧 → NodeId 属性正确
-    ///      （解析器只提取不判权责——路由判定属上位机策略层，见 PROTOCOL.md §2.1）
+    ///      （解析器只提取不判权责——路由判定属上位机策略层，见 docs/protocol/PROTOCOL.md §2.1）
     ///
-    /// 标准帧（来自 PROTOCOL.md v0.9 修订2 §7 示例）：
+    /// 标准帧（来自 docs/protocol/PROTOCOL.md v0.9 修订2 §7 示例）：
     ///   AA 55 00 06 01 FD 00 E2 0C 01 2E F8
     ///   NODE_ID=0x00（单节点/未分配），温度 25.3℃, 电压 3298mV, DS18B20 在线
     ///   CRC 覆盖偏移 2~9 共 8 字节（NODE_ID+LEN+CMD+载荷），0xF82E
     /// </summary>
     public class FrameParserTests
     {
-        /// <summary>PROTOCOL.md v0.9 修订2 §7 标准示例帧（12 字节）。</summary>
+        /// <summary>docs/protocol/PROTOCOL.md v0.9 修订2 §7 标准示例帧（12 字节）。</summary>
         private static readonly byte[] _validFrame =
         {
             0xAA, 0x55, 0x00, 0x06, 0x01, 0xFD, 0x00, 0xE2, 0x0C, 0x01, 0x2E, 0xF8

@@ -1,5 +1,4 @@
 using MetalMonitor.Core;
-using System.IO;
 using Xunit;
 
 namespace MetalMonitor.Tests

@@ -1,6 +1,5 @@
 using MetalMonitor.Core;
 using System.Text.Json;
-using System.Threading;
 // 别名规避命名冲突：本类有同名属性 DataSource（string，对外 API），
 // 类内直接写 DataSourceKind.Simulation 会被解析成"属性.Simulation"（成员查找优先于类型查找），
 // 故枚举在类内一律写作 DataSourceKind
@@ -89,11 +88,11 @@ namespace MetalMonitor.core.Services
         private readonly object _linkHealthLock = new();
 
         // ===== 自动重连 =====
-        /// <summary>重连循环 <u>取消</u> 令牌源：切源、Dispose、手动取消时置位让循环退出。</summary>
+        /// <summary>重连循环的取消令牌源：切源、Dispose、手动取消时置位让循环退出。</summary>
         private CancellationTokenSource? _reconnectCts;
         /// <summary>当前重连尝试次数（0 = 尚未开始）；仅在重连循环内递增。</summary>
         private int _reconnectAttempt;
-        /// <summary>重连循环运行中标记（1 = 跑着）；用 Interlocked 原子读写，心跳线程与循环自身都能访问。</summary>
+        /// <summary>重连循环运行中标记（1 = 运行中）；用 Interlocked 原子读写，心跳线程与循环自身都能访问。</summary>
         private int _reconnectRunningFlag;
         /// <summary>退避等待的唤醒令牌源：端口重新出现时取消它，使重连循环立即重试而无需等待完整退避；仅在循环等待期间非空。</summary>
         private CancellationTokenSource? _reconnectWakeCts;
@@ -162,11 +161,13 @@ namespace MetalMonitor.core.Services
             Enum.GetValues<DataSourceKind>().Select(s => s.ToDisplay()).ToArray(); // UI 下拉框选项来源
 
         // ===== 构造函数族 =====
-        // 收敛为两个构造函数：
-        //   ① public 6 参（DI 选中）：全部依赖必填，ConfigService 由容器注入单例。
-        //   ② internal 测试专用：ConfigService 与 MqttService 可选，不参与 DI 构造函数选择。
-        // 历史上曾有 5 个链式构造函数，但 1 参版内部 new ConfigService() 会覆盖 DI 注入的实例，
-        // 导致 ConfigService 无法从容器注入，故合并为上述两个。
+        // 构造函数族收敛说明：
+        //   之前的 1参/2参×2/3参/5参 靠 : this(...) 链式调用，且 1参内部 new ConfigService()，
+        //   导致 ConfigService 无法从 DI 注入（会被链上的 new 覆盖）。
+        //   现收敛为两个构造函数：
+        //     ① public 6 参（DI 选中）：全功能，所有依赖必填，从 DI 注入 ConfigService（单例）
+        //     ② internal 测试专用：ConfigService 与 MqttService 可选（不对 DI 暴露，不影响构造函数选择）
+        //   公共初始化抽入 Initialize(ConfigService)，两个构造函数都调用。
 
         /// <summary>
         /// 全功能构造函数（DI 运行时选中）：报警 + MQTT 通路 + 批量落库 + 串口通路全部注入，
@@ -349,19 +350,30 @@ namespace MetalMonitor.core.Services
                     }
                     else
                     {
-                        // 按候选序列（持久化端口 → 历史成功端口 → 单端口兜底）逐个尝试；
-                        // 只有"连上并在看门狗窗口内收到有效帧"才算成功——避免连错设备还报正常
+                        // 有硬件：进入寻找设备状态，逐个候选端口验证
+                        SetState(DataSourceState.Searching, null);
                         bool connected = false;
-                        string? error = null;
+                        string? fatalError = null;   // 确定性失败（端口被占用/不存在）
                         foreach (var portName in GetCandidatePorts())
                         {
                             var result = await TryConnectVerifiedAsync(portName, CancellationToken.None).ConfigureAwait(false);
                             if (result.Ok) { connected = true; break; }
-                            error = result.Error;
+                            if (result.Error != null) fatalError = result.Error;   // 记录连接异常
                         }
 
                         if (!connected)
-                            SetState(DataSourceState.Faulted, error ?? "串口连接失败：未能在任何候选端口上收到有效数据帧");
+                        {
+                            if (fatalError != null)
+                            {
+                                // 所有候选都连接异常（被占用/不存在）：确定性失败
+                                SetState(DataSourceState.Faulted, fatalError);
+                            }
+                            else
+                            {
+                                // 能打开但都没收到有效帧：保持 Searching，由后台重连循环继续尝试
+                                // LinkHealth 保持 Inactive（未连接），由 TryStartReconnect 后续更新
+                            }
+                        }
                     }
                     break;
                 case DataSourceKind.Simulation:
@@ -374,7 +386,7 @@ namespace MetalMonitor.core.Services
                     {
                         try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
                     }
-                    SetState(DataSourceState.Online, null);
+                    SetState(DataSourceState.Simulated, null);
                     break;
             }
         }
@@ -623,7 +635,8 @@ namespace MetalMonitor.core.Services
         private static string? BuildLinkHealthReason(LinkHealth health, int watchdogSeconds) => health switch
         {
             LinkHealth.Inactive => "串口未连接",
-            LinkHealth.Recovering => "串口已连接，等待首帧",
+            LinkHealth.Handshaking => "已打开端口，等待设备响应",
+            LinkHealth.Recovering => "串口已连接，等待数据稳定",
             LinkHealth.NoSignal => $"超过 {watchdogSeconds} 秒未收到任何串口数据",
             LinkHealth.NoValidFrame => $"超过 {watchdogSeconds} 秒未收到有效数据帧",
             LinkHealth.Reconnecting => "链路已断开，正在后台自动重连",
@@ -660,6 +673,11 @@ namespace MetalMonitor.core.Services
             // 循环没在跑：先把当前端口记成"基线"，免得刚启动后的第一拍把本来就在场的设备误判成"刚来的"
             _lastSeenSerialPorts = GetCurrentSerialPorts();
 
+            // Faulted 状态：系统里连一个串口都没有时不重启；有任何串口在场即放行，
+            // 交给理由二启动循环（循环自身有两轮失败上限，不会每秒抖动）
+            if (_state == DataSourceState.Faulted && GetCurrentSerialPorts().Length == 0)
+                return;
+
             string? reason;
             // 理由一：3 秒没收到任何字节 —— 这是"线断了"唯一可信的证据（拔线时系统仍说"连着"）
             if (_linkHealth == LinkHealth.NoSignal)
@@ -678,8 +696,9 @@ namespace MetalMonitor.core.Services
             if (Interlocked.CompareExchange(ref _reconnectRunningFlag, 1, 0) != 0) return;   // 已是 1 时返回
             if (_disposed) { Interlocked.Exchange(ref _reconnectRunningFlag, 0); return; }   // Dispose 竞争
 
-            // 断线与待接入均属故障恢复过程：顶栏第一行显示"连接失败"，与第二行"重连中"共同表达当前状态
-            SetState(DataSourceState.Faulted, reason);
+            // 断线与待接入均属恢复过程：进入寻找设备状态，由后台重连循环继续尝试
+            SetState(DataSourceState.Searching, reason);
+            // 链路状态保持 Inactive（尚未打开端口），由 TryConnectVerifiedAsync 成功后更新为 Handshaking
 
             // 先做一次主动 DisconnectAsync 把旧句柄清干净（IgnoreAwaitfire-and-forget）
             _ = Task.Run(async () =>
@@ -711,19 +730,24 @@ namespace MetalMonitor.core.Services
         }
 
         /// <summary>
-        /// 重连主循环：按退避间隔等待，每次唤醒后尝试连接，失败则延长间隔，直至连接成功、被取消或对象释放。
+        /// 重连主循环：按退避间隔等待，每次唤醒后遍历候选端口尝试连接；
+        /// 连续两轮全部失败则判定 Faulted 并退出，任一成功则置 Online 并退出。
         /// </summary>
         /// <param name="ct">终止信号（切换数据源、Dispose 或手动取消时置位）。</param>
         /// <remarks>
         /// 每轮流程：
         ///   1. 依据当前尝试次数计算等待时长（1 秒起，逐次翻倍，上限 30 秒，附加随机抖动）。
         ///   2. 执行等待，可被外部唤醒提前中断。
-        ///   3. 依次尝试候选端口，每个端口有固定验证窗口。
-        ///   4. 任一端口连接成功即退出；全部失败则进入下一轮并延长等待。
-        /// 采用无限重试：现场设备可能长时间离线，放弃重试需要人工介入。
+        ///   3. 依次尝试候选端口，每个端口有验证窗口（50ms 步进轮询，首帧到达即返回）。
+        ///   4. 任一端口连接成功即退出；全部失败则计一轮失败。
+        ///   5. 连续两轮全部失败 → 判定 Faulted 并退出循环。
+        /// 设计边界：两轮为临时方案，覆盖"两个串口、各验证一次"的场景；后续 Modbus 改造会替换本逻辑。
         /// </remarks>
         private async Task ReconnectLoopAsync(CancellationToken ct)
         {
+            int consecutiveFailedRounds = 0;
+            const int maxFailedRounds = 2;
+
             while (!ct.IsCancellationRequested && !_disposed)
             {
                 int baseSeconds = _configService.SerialReconnectBaseSeconds;
@@ -758,14 +782,36 @@ namespace MetalMonitor.core.Services
                 if (ct.IsCancellationRequested || _disposed) return;
                 if (_selectedDataSource != DataSourceKind.Serial) return;   // 用户可能在等待期间切了源
 
-                if (_serialService == null || !_serialService.IsAvailable) continue;
+                if (_serialService == null || !_serialService.IsAvailable)
+                {
+                    // 系统没有任何串口（如设备已拔除）：同样计为一轮失败。
+                    // 若此处直接 continue，本轮的失败不会被记数，循环会空转，永远停在 Searching。
+                    consecutiveFailedRounds++;
+                    if (consecutiveFailedRounds >= maxFailedRounds)
+                    {
+                        SetState(DataSourceState.Faulted, "系统未检测到串口设备，插回设备后会自动重试");
+                        return;
+                    }
+                    continue;
+                }
 
                 // 按候选序列逐个尝试，任一端口通过验证即成功（可兼容端口漂移）
+                bool anySuccess = false;
                 foreach (var portName in GetCandidatePorts())
                 {
                     var result = await TryConnectVerifiedAsync(portName, ct).ConfigureAwait(false);
-                    if (result.Ok) return;   // 成功：状态已置 Online、端口已持久化；RunningFlag 由 finally 归零
+                    if (result.Ok) { anySuccess = true; break; }   // 成功：状态已置 Online、端口已持久化
                     if (ct.IsCancellationRequested || _disposed) return;
+                }
+
+                if (anySuccess) return;   // 成功退出，RunningFlag 由 finally 归零
+
+                // 本轮全部失败：计一轮，连续两轮则判定 Faulted
+                consecutiveFailedRounds++;
+                if (consecutiveFailedRounds >= maxFailedRounds)
+                {
+                    SetState(DataSourceState.Faulted, "连续两轮未找到可用设备，请检查设备连接后切换数据源重试");
+                    return;
                 }
             }
         }
@@ -932,10 +978,23 @@ namespace MetalMonitor.core.Services
                 return (false, ex.Message);   // 端口不存在/被占用：试下一个候选
             }
 
+            // 打开端口成功：链路状态转为等待验证（等首帧确认是不是目标设备）
+            lock (_linkHealthLock) { _linkHealth = LinkHealth.Handshaking; }
+            LinkHealthChanged?.Invoke(this, new LinkHealthChangedEventArgs(
+                LinkHealth.Handshaking, DataSourceKind.Serial.ToDisplay(), "已打开端口，等待设备响应"));
+
             try
             {
-                // 验证窗口：期间只要收到一帧通过校验的数据，上述时间戳就会前移
-                await Task.Delay(_configService.SerialWatchdogSeconds * 1000, ct).ConfigureAwait(false);
+                // 验证窗口：50ms 步进轮询，首帧到达立即返回，避免空等满 3 秒
+                int timeoutMs = _configService.SerialWatchdogSeconds * 1000;//理论上表达为3秒
+                int elapsedMs = 0;//流逝之时
+                while (elapsedMs < timeoutMs)//当流逝之时小于超时时间
+                {
+                    if (Volatile.Read(ref _lastSerialValidFrameMs) > beforeFrameMs)//如果有新的有效帧到达
+                        break;
+                    await Task.Delay(50, ct).ConfigureAwait(false);//不然等50ms
+                    elapsedMs += 50;//记录流逝之总计
+                }
             }
             catch (OperationCanceledException)
             {
@@ -944,16 +1003,24 @@ namespace MetalMonitor.core.Services
                 return (false, null);
             }
 
-            if (Volatile.Read(ref _lastSerialValidFrameMs) > beforeFrameMs)
+            if (Volatile.Read(ref _lastSerialValidFrameMs) > beforeFrameMs)//如果有新的有效帧到达
             {
                 // 验证通过：更新上次成功端口与历史端口列表（在同一方法内完成，避免两处记录不一致）
-                _configService.RecordSerialPortSuccess(portName);
+                _configService.RecordSerialPortSuccess(portName);//把成功的端口放到历史列表里的首位
                 SetState(DataSourceState.Online, null);
+                // 已确认设备：链路状态转为等待数据稳定
+                lock (_linkHealthLock) { _linkHealth = LinkHealth.Recovering; }
+                LinkHealthChanged?.Invoke(this, new LinkHealthChangedEventArgs(
+                    LinkHealth.Recovering, DataSourceKind.Serial.ToDisplay(), "串口已连接，等待数据稳定"));
                 return (true, null);
             }
 
             // 验证窗口内未收到有效帧：对端不是本项目设备或波特率不匹配，断开后尝试下一个
             try { await _serialService.DisconnectAsync().ConfigureAwait(false); } catch { }
+            // 链路状态回到未连接
+            lock (_linkHealthLock) { _linkHealth = LinkHealth.Inactive; }
+            LinkHealthChanged?.Invoke(this, new LinkHealthChangedEventArgs(
+                LinkHealth.Inactive, DataSourceKind.Serial.ToDisplay(), "端口已关闭"));
             return (false, null);
         }
 
@@ -1299,27 +1366,6 @@ namespace MetalMonitor.core.Services
 
                 _devicesLoaded = true;   // 标记首次同步完成，下次心跳跳过本段
             }
-        }
-
-        /// <summary>
-        /// 转发报警服务的无状态阈值越限判断（对外暴露的查询接口）。
-        /// </summary>
-        /// <param name="metricName">指标名称。</param>
-        /// <param name="value">待判定的指标当前值。</param>
-        /// <returns>当前值是否处于报警态。</returns>
-        public bool ShouldAlarm(string metricName, double value)
-        {
-            return _alarmService.ShouldAlarm(metricName, value);
-        }
-
-        /// <summary>
-        /// 转发查询指定指标当前配置的报警阈值（对外暴露的查询接口）。
-        /// </summary>
-        /// <param name="metricName">指标名称。</param>
-        /// <returns>报警阈值；指标未配置时为 0。</returns>
-        public double GetAlarmThreshold(string metricName)
-        {
-            return _alarmService.GetAlarmThreshold(metricName);
         }
 
         // UI 层"刷新设备列表"入口：先冲刷缓冲，再强制重新同步数据库

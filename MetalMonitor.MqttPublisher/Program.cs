@@ -21,7 +21,7 @@ namespace MetalMonitor.MqttPublisher
 
             var brokers = new[] { "broker.emqx.io", "broker.hivemq.com", "test.mosquitto.org" };
             bool connected = false;
-            
+
             foreach (var broker in brokers)
             {
                 try
@@ -44,7 +44,7 @@ namespace MetalMonitor.MqttPublisher
                     Console.WriteLine($"连接 {broker} 失败: {ex.Message}");
                 }
             }
-            
+
             if (!connected)
             {
                 Console.WriteLine("无法连接到任何MQTT Broker，按任意键退出...");

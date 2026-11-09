@@ -128,7 +128,7 @@ namespace MetalMonitor.Core
         /// NODE_ID → 设备名 路由表的启动只读快照（机制/策略分离：路由是策略，仅此一读）。
         /// 每次调用按当前内存副本新建只读字典，键为 NODE_ID 字节值；
         /// JSON 键为 NODE_ID 的十六进制字符串（"2A"/"2a" 均可），非法键静默忽略（路由表损坏不挡启动）；
-        /// 0x00（单节点缺省）不入表，由调用方按"取第一台"处理（见 PROTOCOL.md §2.1）。
+        /// 0x00（单节点缺省）不入表，由调用方按"取第一台"处理（见 docs/protocol/PROTOCOL.md §2.1）。
         /// 设计为只读：程序内无写入通道，仅手工编辑 config.json，系统启动时读取一次，运行中不变。
         /// </summary>
         /// <returns>NODE_ID → 设备名 的只读快照；无路由段时为空字典。</returns>
@@ -203,7 +203,7 @@ namespace MetalMonitor.Core
         {
             var assemblyPath = Assembly.GetExecutingAssembly().Location;
             var appDirectory = Path.GetDirectoryName(assemblyPath) ?? AppDomain.CurrentDomain.BaseDirectory;
-            
+
             var currentDir = new DirectoryInfo(appDirectory);
             while (currentDir != null)
             {
@@ -214,7 +214,7 @@ namespace MetalMonitor.Core
                 }
                 currentDir = currentDir.Parent;
             }
-            
+
             return Path.Combine(appDirectory, "config.json");
         }
 

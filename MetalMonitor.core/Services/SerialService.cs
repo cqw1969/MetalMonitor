@@ -1,5 +1,4 @@
 using System.IO.Ports;
-using System.Threading.Tasks;
 
 namespace MetalMonitor.Core
 {

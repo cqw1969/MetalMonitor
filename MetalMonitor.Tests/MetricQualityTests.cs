@@ -1,11 +1,6 @@
 using MetalMonitor.core.Services;
 using MetalMonitor.Core;
 using Moq;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
 using Xunit;
 
 namespace MetalMonitor.Tests
@@ -25,7 +20,7 @@ namespace MetalMonitor.Tests
     {
         private readonly string _tempDir;
 
-        /// <summary>PROTOCOL.md v0.9 标准示例帧（用于把链路拉到 Healthy）。</summary>
+        /// <summary>docs/protocol/PROTOCOL.md v0.9 标准示例帧（用于把链路拉到 Healthy）。</summary>
         private static readonly byte[] ValidFrame =
         {
             0xAA, 0x55, 0x00, 0x06, 0x01, 0xFD, 0x00, 0xE2, 0x0C, 0x01, 0x2E, 0xF8

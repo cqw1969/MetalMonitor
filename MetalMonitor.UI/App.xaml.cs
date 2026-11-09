@@ -1,12 +1,8 @@
-using Microsoft.Extensions.DependencyInjection;
+using MetalMonitor.core.Services;
 using MetalMonitor.Core;
 using MetalMonitor.UI.ViewModels;
-using System;
-using System.IO;
-using System.Text;
-using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using System.Windows;
-using MetalMonitor.core.Services;
 
 namespace MetalMonitor.UI
 {
@@ -20,7 +16,7 @@ namespace MetalMonitor.UI
         private ServiceProvider? _serviceProvider;
 
         /// <summary>全局滚动文件日志记录器实例，供三类未处理异常回调统一写入日志。</summary>
-        // 运行时异常统一写入 logs/ 目录的滚动日志：单文件 5MB，超 10 个删除最早 5 个
+        // 单文件 5 MB，超过 10 个时删除最早的 5 个
         private static readonly RollingFileLogger _logger = new();
 
         /// <summary>

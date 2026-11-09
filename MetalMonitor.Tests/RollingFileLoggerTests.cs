@@ -1,7 +1,5 @@
 using MetalMonitor.Core;
-using System.IO;
 using System.Text;
-using System.Threading.Tasks;
 using Xunit;
 
 namespace MetalMonitor.Tests

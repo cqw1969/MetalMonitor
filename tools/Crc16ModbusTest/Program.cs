@@ -1,18 +1,22 @@
 using System.Text;
 
-// 标准测试向量："123456789" 的 ASCII 字节（0x31~0x39，共 9 个字节）
-//byte[] testVector = Encoding.ASCII.GetBytes("123456789");
-byte[] testVector = { 0x06 ,0x01 ,0x00 ,0x01 ,0x77, 0x03 ,0x01 };
+// CRC-16/MODBUS 自检：对固定向量计算 CRC 并与期望值比对
+// 向量 1（协议强制）：ASCII "123456789"，期望 0x4B37（docs/protocol/PROTOCOL.md v0.9 §6.1）
+byte[] standardVector = Encoding.ASCII.GetBytes("123456789");
+ushort standardResult = ComputeCrc16(standardVector);
+Console.WriteLine($"\"123456789\" -> 0x{standardResult:X4}  (期望 0x4B37)");
+Console.WriteLine(standardResult == 0x4B37 ? "PASS" : "FAIL");
 
+// 向量 2（历史帧）：06 01 00 01 77 03 01，期望 0x070C
+byte[] testVector = { 0x06, 0x01, 0x00, 0x01, 0x77, 0x03, 0x01 };
 ushort result = ComputeCrc16(testVector);
-
 Console.WriteLine($"\"06 01 00 01 77 03 01\" -> 0x{result:X4}  (期望 0x070C)");
 Console.WriteLine(result == 0x070C ? "PASS" : "FAIL");
 
 // 附加验证：空数据应原样返回初值
 Console.WriteLine($"空数据 -> 0x{ComputeCrc16(Array.Empty<byte>()):X4}  (期望 0xFFFF)");
 
-// 新帧向量：CRC 覆盖范围从 NODE_ID 起共 8 字节（PROTOCOL v0.9 修订2 §6）
+// 向量 3：CRC 覆盖范围从 NODE_ID 起共 8 字节（docs/protocol/PROTOCOL.md v0.9 修订2 §6）
 // 载荷 = NODE_ID(00) + LEN(06) + CMD(01) + 温度(0x00FD=25.3℃) + mV(0x0CE2=3298mV) + 状态(01)
 byte[] nodeFrameVector = { 0x00, 0x06, 0x01, 0xFD, 0x00, 0xE2, 0x0C, 0x01 };
 ushort nodeResult = ComputeCrc16(nodeFrameVector);

@@ -1,7 +1,6 @@
 using MQTTnet;
 using MQTTnet.Client;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace MetalMonitor.Core
 {
@@ -75,7 +74,7 @@ namespace MetalMonitor.Core
                     Console.WriteLine($"[MQTT] 连接 {broker} 失败: {ex.Message}");
                 }
             }
-            
+
             throw new InvalidOperationException("无法连接到任何MQTT Broker");
         }
 
@@ -135,7 +134,7 @@ namespace MetalMonitor.Core
             var topic = e.ApplicationMessage.Topic;
             var payload = e.ApplicationMessage.PayloadSegment.ToArray();
             var payloadString = Encoding.UTF8.GetString(payload);
-            
+
             Console.WriteLine($"[MQTT] 收到消息: {topic} -> {payloadString}");
             MessageReceived?.Invoke(this, new MqttMessageReceivedEventArgs(topic, payloadString));
             await Task.CompletedTask;

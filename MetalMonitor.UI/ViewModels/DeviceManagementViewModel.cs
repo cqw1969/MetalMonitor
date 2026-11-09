@@ -1,9 +1,7 @@
 using MetalMonitor.Core;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Windows;
 
 namespace MetalMonitor.UI.ViewModels
 {
@@ -55,11 +53,9 @@ namespace MetalMonitor.UI.ViewModels
         }
 
         /// <summary>获取是否已选中设备（控制修改/删除按钮可用性）。</summary>
-        // 是否已选中设备（控制修改/删除按钮可用性）
         public bool HasSelectedDevice => _selectedDevice != null;
 
         /// <summary>编辑表单-设备名称 backing field。</summary>
-        // 编辑表单字段
         private string _editName = string.Empty;
         /// <summary>获取或设置编辑表单中的设备名称。</summary>
         public string EditName
