@@ -619,4 +619,37 @@
 - **代价/已知风险**: 放宽后若电脑上插着无关串口设备，重连循环会尝试它并消耗一个验证窗口（约 3 秒），但不影响正确性，失败后按退避继续
 - **最后校验**: 2026-11-07 修复后 `dotnet build` 0 错误、`dotnet test` 124/124 通过（新增 `Reconnect_StartsWhenRememberedPortsAbsentButAnotherPortPresent` 复现本场景）
 
+### 43. 清理"未使用 using"删掉测试必需的两行 → 测试工程 5 × CS0103 编译失败
+
+- **时间**: 2026-11-09 15:27:38（STEP-30，用户确认后修复；缺陷引入于同日上午提交 f345521）
+- **文件**: `MetalMonitor.Tests/ReconnectBackoffTests.cs`（第 1-2 行）；被测类型 `MetalMonitor.core/DataSource.cs` → `ReconnectBackoff`（约 L212-240）
+- **现象**: `dotnet build MetalMonitor.sln` 报 5 个 `CS0103：当前上下文中不存在名称"ReconnectBackoff"`，全部集中在 `ReconnectBackoffTests` 的 `GetDelayMs_*` 用例。此时上位机照常可运行，问题只存在于测试工程，容易被"程序能跑"的假象掩盖
+- **根本原因**: 提交 f345521「状态机分层与串口状态修复，清理死代码」把该测试文件头部的 `using MetalMonitor.Core;` 与 `using System;` 一并删除（diff 显示为按"未使用"清理）。但两行都在用：`ReconnectBackoff` 位于 `namespace MetalMonitor.Core`，`Random` 来自 `System`。删 using 不会让已运行的主程序变红，直到下一次全量 `dotnet build` 才暴露
+- **解决方法**: 在 `ReconnectBackoffTests.cs` 第 1 行补回 `using MetalMonitor.Core;`（`System` 已由隐式全局 using 覆盖，无需补）；用例与断言一行未动
+- **关联**: STEP-28（f345521 的清理改动）、#31 / #34（同为编译期命名/可见性问题）、#3b（InternalsVisibleTo 机制来源）
+- **教训/最佳实践**: ① "清理未使用 using" 必须以 `dotnet build` 退出码为验收，不能凭 IDE 灰色提示或人工阅读判断——分析器缓存可能滞后于重构；② 删 using 属于编译期契约改动，与删死代码风险等级不同，应单独提交、单独验证；③ 测试工程编译失败不该被"主程序能跑"掩盖，验收必须同时看 `dotnet build` 与 `dotnet test`
+- **最后校验**: 2026-11-09 修复后 `dotnet build` 0 错误（6 个既有 NU1701 警告，非本次引入）、`dotnet test` 124/124 通过
+
+### 44. 详情页日期选择器点击三角不弹出日历（模板部件类型不匹配，静默失效）
+
+- **时间**: 2026-11-10（本地时间）
+- **文件**: `MetalMonitor.UI/App.xaml`（DatePicker 模板）：`PART_Button` 定义约 L238-256、`PART_Popup` 约 L259-264
+- **现象**: 设备详情页"历史数据"页签的两个日期选择器，点击右侧三角毫无反应，日历从不弹出；控件看起来与普通输入框无异。无异常、无日志、编译期无警告
+- **根本原因**: WPF `DatePicker.OnApplyTemplate()` 用 `_dropDownButton = GetTemplateChild("PART_Button") as Button;` 取开关部件（见 dotnet/wpf 源码 `DatePicker.cs` L693）。模板里写的是 `ToggleButton` —— 它与 `Button` 同为 `ButtonBase` 的子类，但二者是兄弟类型，`as Button` 转换结果为 `null`，于是 L694 的 `if (_dropDownButton != null)` 不成立，`DropDownButton_Click` 从未被订阅，`TogglePopUp()` 永不执行。整个过程不抛异常，属静默失效。附带问题：模板 `PART_Popup` 内写的 `<Border><Calendar x:Name="PART_Calendar"/></Border>` 是死代码——L685 `_popUp.Child = this._calendar;` 会用代码里 `new Calendar()`（L1070）整体覆盖掉模板内容，故那段深色日历样式从未生效，并误导排障方向
+- **解决方法**: ① `PART_Button` 由 `ToggleButton` 改为 `Button`，并为其加内联 `ControlTemplate`（纯 Border + ContentPresenter）避免引入 Button 默认浅色外观；② 删除 `PART_Popup` 内被覆盖的 `Border` + `Calendar`，改为自闭合 Popup 并加注释说明"内容由控件运行时注入"；③ 三角字号 8→11，提升可发现性
+- **关联**: #9（深色主题下控件样式不适配）；STEP-23（注释规范化，本处注释沿用客观表述）
+- **教训/最佳实践**: WPF 模板部件的契约是**精确类型**，`[TemplatePart]` 标注的类型与 `GetTemplateChild(...) as T` 里的 T 必须严格一致，"功能更强"的派生/兄弟类型反而会失败；此类失败不抛异常、不报警告，只能靠真机点击发现。排查顺序应为"我的部件类型与契约一致吗"，而不是"事件为何没触发"。另外：自定义模板里放在 Popup 内的内容可能被控件运行时覆盖，改模板前应先读控件源码的 `OnApplyTemplate`
+- **最后校验**: 2026-11-10 `dotnet build` 0 错误（9 个既有 NU1701 警告，非本次引入）、`dotnet test` 124/124 通过；真机点击弹日历待用户验证
+
+### 45. 历史查询选择结束日期后查不到当天数据（日期粒度与时时刻刻度不匹配）
+
+- **时间**: 2026-11-11（本地时间）
+- **文件**: `MetalMonitor.UI/ViewModels/DeviceDetailViewModel.cs`：`LoadHistoricalDataAsync()`（修复后逻辑约 L309-L319）；SQL 侧证据 `MetalMonitor.core/Services/DatabaseService.cs` L346-L354
+- **现象**: 详情页"历史数据"页签，结束日期选成"今天"（或任意一天）后查询为空或缺当天全部数据；不选日期（默认 EndDate=此刻）时正常
+- **根本原因**: 日历控件（DatePicker）选中日期返回的值是**当天 00:00:00**（日期粒度），而数据库查询条件是 `Timestamp <= @EndTime`（时刻粒度）。用户选"11月10日"得到的查询上界是 `2026-11-10 00:00:00`，11月10日零点之后的全部记录都被排除。粒度不匹配：用户语义是"含这一天全天"，控件语义是"这一天的起始时刻"
+- **解决方法**: 在 ViewModel 侧做粒度换算，不动数据库 API 契约：`startOfDay = StartDate.Date`、`endOfDay = EndDate.Date.AddDays(1).AddSeconds(-1)`（即结束日期补到当天 23:59:59）。选择在 ViewModel 而非 SQL 改半开区间（`< 次日零点`）的原因：后者会改变 `GetDataRecordsByTimeRangeAsync` 的契约含义，其他调用方与测试会静默跟随变化，为一个 UI 语义 Bug 动数据层契约不值得
+- **关联**: #44（同一控件族的模板问题，同日发现）；#8（日期/时间语义类问题）
+- **教训/最佳实践**: 凡是"日期控件 ↔ 时刻范围查询"的接缝处，都要显式做一次粒度换算，并写明"含"还是"不含"——这类 Bug 不会在开发期暴露（开发时数据都是刚生成的，默认"此刻"上界恰好掩盖了它），只会在用户按日历选日期后出现
+- **最后校验**: 2026-11-11 `dotnet build` 0 错误（9 个既有 NU1701 警告，非本次引入）、`dotnet test` 124/124 通过；真机选当天为结束日期验证待用户确认
+
 

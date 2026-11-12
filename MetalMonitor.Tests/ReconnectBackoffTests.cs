@@ -1,3 +1,4 @@
+using MetalMonitor.Core;
 using Xunit;
 
 namespace MetalMonitor.Tests

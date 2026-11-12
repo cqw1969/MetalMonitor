@@ -306,9 +306,14 @@ namespace MetalMonitor.UI.ViewModels
 
             try
             {
+                // 日历控件只能选"日期"，选中值是当天 00:00:00；而用户语义是"含这一天全天"。
+                // 不补到 23:59:59 的话，选了哪天就恰好查不到哪天（SQL 是 Timestamp <= 结束时刻）。
+                var startOfDay = StartDate.Date;
+                var endOfDay = EndDate.Date.AddDays(1).AddSeconds(-1);
+
                 var records = await _databaseService.GetDataRecordsByTimeRangeAsync(
-                    StartDate,
-                    EndDate,
+                    startOfDay,
+                    endOfDay,
                     _device.Id,
                     SelectedMetricName
                 );

@@ -235,26 +235,33 @@
                                                        BorderThickness="0" Padding="6,3"
                                                        VerticalContentAlignment="Center"
                                                        SelectionBrush="#FF4A90D9" CaretBrush="#FF6CD46C"/>
-                                    <ToggleButton x:Name="PART_Button" Grid.Column="1"
-                                                  Focusable="False" ClickMode="Press"
-                                                  Background="Transparent" BorderThickness="0" Width="24">
-                                        <Border Background="#FF3D3D4F" CornerRadius="0,3,3,0">
-                                            <TextBlock Text="▼" FontSize="8" Foreground="#FFAAAAAA"
-                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                                        </Border>
-                                    </ToggleButton>
+                                    <!-- 开关必须是 Button，不能是 ToggleButton：
+                                         WPF 内部用 "GetTemplateChild("PART_Button") as Button" 取这个部件，
+                                         ToggleButton 与 Button 是兄弟类型（都继承 ButtonBase），转换结果为 null，
+                                         点击事件根本不会订阅——三角点了没反应，且不报任何错（静默失效）。 -->
+                                    <Button x:Name="PART_Button" Grid.Column="1"
+                                            Focusable="False" ClickMode="Press"
+                                            Background="Transparent" BorderThickness="0" Width="24">
+                                        <!-- 内联模板：避免 Button 自带的浅色按钮外观破坏深色主题 -->
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="#FF3D3D4F" CornerRadius="0,3,3,0">
+                                                    <ContentPresenter HorizontalAlignment="Center"
+                                                                      VerticalAlignment="Center"/>
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                        <TextBlock Text="▼" FontSize="11" Foreground="#FFAAAAAA"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Button>
                                 </Grid>
                             </Border>
+                            <!-- 这里刻意不写任何内容：WPF 会在运行时用 _popUp.Child = new Calendar() 覆盖掉
+                                 模板里放的东西（见 DatePicker.OnApplyTemplate）。所以在这里写 Calendar 是死代码，
+                                 只会误导后人以为深色日历样式在此生效。日历外观请改用 Calendar 的隐式样式控制。 -->
                             <Popup x:Name="PART_Popup" Placement="Bottom"
                                    AllowsTransparency="True" StaysOpen="False"
-                                   PopupAnimation="Slide" Focusable="False">
-                                <Border Background="#FF2D2D3F" BorderBrush="#FF555566"
-                                        BorderThickness="1" CornerRadius="4" Margin="0,2,8,8">
-                                    <Calendar x:Name="PART_Calendar"
-                                              Background="#FF2D2D3F" Foreground="#FFE0E0E0"
-                                              BorderBrush="#FF555566"/>
-                                </Border>
-                            </Popup>
+                                   PopupAnimation="Slide" Focusable="False"/>
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
