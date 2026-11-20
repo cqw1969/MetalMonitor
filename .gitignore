@@ -388,3 +388,15 @@ FodyWeavers.xsd
 *.dep
 JLinkLog.txt
 JLinkSettings.ini
+
+# ===== 毕设项目（独立新项目，与本项目代码零耦合） =====
+毕设/
+
+# ===== 个人简历（含手机号/邮箱等个人信息，禁止入库） =====
+resume/
+
+# ===== 不应公开的内部文档（带教记录 / 项目规划 / 课程报告） =====
+.agent/
+PROJECT_CONTEXT.md
+PROJECT_PLAN.md
+课程实践报告.md
